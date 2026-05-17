@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.worldview.ingest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/brianlo/worldview-api/.venv/bin/python</string>
+        <string>/Users/brianlo/worldview-api/scripts/run_all.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/brianlo/worldview-api</string>
+
+    <!-- Run every 15 minutes (900 seconds), matching GDELT's publish cadence. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Also fire once on first load so we don't have to wait 15 min. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/brianlo/worldview-api/logs/ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/brianlo/worldview-api/logs/ingest.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

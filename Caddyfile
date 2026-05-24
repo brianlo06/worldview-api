@@ -1,0 +1,29 @@
+# Caddy config for the worldview API edge.
+#
+# {$DOMAIN} is substituted from the container env (set in compose.yaml,
+# sourced from .env). Caddy automatically obtains + renews a Let's Encrypt
+# cert for api.{$DOMAIN} on first request — no manual ACME needed.
+
+{
+    # ACME contact address. Optional but recommended.
+    email admin@{$DOMAIN}
+}
+
+api.{$DOMAIN} {
+    encode zstd gzip
+
+    # Edge rate-limit for /search: this endpoint runs fastembed inference
+    # + a pgvector kNN scan per request and is the cheapest CPU-exhaustion
+    # vector if left unthrottled. App-side bounds (SearchRequest field
+    # limits) cover correctness; this covers volume.
+    @search path /search
+    rate_limit @search {
+        zone search_per_ip {
+            key    {remote_host}
+            events 30
+            window 1m
+        }
+    }
+
+    reverse_proxy api:8088
+}

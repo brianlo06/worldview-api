@@ -1,0 +1,30 @@
+# Keep the build context small + free of secrets.
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# Local-only state. Logs in particular are large + may contain request data.
+logs/
+*.log
+
+# Local env files — secrets stay on the host, never the image.
+.env
+.env.*
+!.env.production.example
+
+# macOS dev-only orchestration; the image is for Linux containers.
+ops/
+
+# Tests are not needed in the runtime image.
+tests/
+
+# Docs + checklists shouldn't bloat the image.
+DEPLOY.md
+README.md

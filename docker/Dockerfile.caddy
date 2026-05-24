@@ -1,0 +1,13 @@
+# Caddy with the third-party caddy-ratelimit plugin built in.
+#
+# The plain caddy:2 image doesn't include rate_limit — and /search is an
+# expensive embedding+pgvector path that we want throttled at the edge,
+# independent of any app-level limit. Build a custom binary via xcaddy
+# (the official caddy:builder image bundles xcaddy + Go).
+
+FROM caddy:2-builder AS builder
+RUN xcaddy build \
+    --with github.com/mholt/caddy-ratelimit
+
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

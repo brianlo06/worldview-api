@@ -1,0 +1,112 @@
+# worldview production stack.
+#
+# Run from the deploy host:  docker compose up -d --build
+#
+# Compose `${VAR}` substitution reads from ./.env (alongside this file).
+# On first deploy copy .env.production -> .env so both compose
+# interpolation and per-service env_file: .env see the same values.
+
+name: worldview
+
+services:
+
+  # Postgres 17 + PostGIS + pgvector. Custom image because the stock
+  # postgis/postgis tag doesn't include pgvector. SQL in ./sql runs on
+  # first init via /docker-entrypoint-initdb.d.
+  db:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db
+    image: worldview-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: worldview
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-worldview_prod}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=vector
+      - -c
+      - max_connections=50
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worldview -d ${POSTGRES_DB:-worldview_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    expose:
+      - "5432"
+
+  # FastAPI service. Caddy reverse-proxies to api:8088 over the internal
+  # compose network; the port is not published to the host.
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: worldview-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # /health runs SELECT 1; failure (DB down) returns 503, marking the
+      # container unhealthy so docker / a future LB can react.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8088/health',timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    expose:
+      - "8088"
+
+  # Same image, different command: loop run_all.py every 15 minutes.
+  # `|| true` keeps the loop alive across a single bad run (GDELT outage,
+  # transient DB blip) — the script itself isolates per-step failures.
+  ingest:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: worldview-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - "while true; do python scripts/run_all.py || true; sleep 900; done"
+
+  # Caddy 2 with the caddy-ratelimit plugin baked in. Terminates TLS for
+  # api.${DOMAIN} via Let's Encrypt and rate-limits /search at the edge.
+  caddy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.caddy
+    image: worldview-caddy
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set in .env (e.g. example.com)}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import close_pool, get_pool
@@ -27,10 +27,11 @@ class AnomalyOut(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str
-    hours: int = 48
-    limit: int = 30
-    min_similarity: float = 0.45  # below this we treat the result as off-topic
+    query: str = Field(min_length=1, max_length=500)
+    hours: int = Field(48, ge=1, le=720)
+    limit: int = Field(30, ge=1, le=100)
+    # below this we treat the result as off-topic
+    min_similarity: float = Field(0.45, ge=0.0, le=1.0)
 
 
 class SearchResultOut(BaseModel):
@@ -165,8 +166,19 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(response: Response) -> dict[str, str]:
+    """Liveness + DB reachability. Returns 503 if Postgres is unreachable so
+    the load balancer / uptime monitor sees a real failure instead of a
+    cheerful 200 while every data endpoint is 500ing."""
+    try:
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+    except Exception:
+        # Deliberately no exception detail in the body — internals stay in logs.
+        response.status_code = 503
+        return {"status": "degraded", "db": "unreachable"}
+    return {"status": "ok", "db": "ok"}
 
 
 @app.get("/anomalies", response_model=list[AnomalyOut])
@@ -245,7 +257,7 @@ def search(body: SearchRequest) -> list[SearchResultOut]:
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
-            f"""
+            """
             SELECT c.id,
                    e.title,
                    e.summary,
@@ -282,12 +294,12 @@ def search(body: SearchRequest) -> list[SearchResultOut]:
                     e2.embedding <=> c.centroid_embedding ASC
                 LIMIT 1
             ) e ON true
-            WHERE c.last_seen > NOW() - INTERVAL '{body.hours} hours'
+            WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
               AND e.id IS NOT NULL
             ORDER BY c.centroid_embedding <=> %s
             LIMIT %s
             """,
-            (query_vec, query_vec, body.limit),
+            (query_vec, body.hours, query_vec, body.limit),
         )
         rows = cur.fetchall()
 

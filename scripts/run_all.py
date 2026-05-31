@@ -20,7 +20,6 @@ import sys
 import time
 import traceback
 
-from worldview_api import prune as prune_mod
 from worldview_api.analyze import anomalies as anomalies_mod
 from worldview_api.cluster import assign as cluster_assign
 from worldview_api.cluster import summarize as cluster_summarize
@@ -48,9 +47,8 @@ def main() -> None:
         ("Clustering",   lambda: cluster_assign.cluster_assign_once()),
         ("Summarization",lambda: cluster_summarize.summarize_pending(limit=20)),
         ("Anomalies",    lambda: anomalies_mod.run_anomalies_once()),
-        # Last so a prune failure can't block real ingest. Keeps the DB
-        # bounded — drops events/raw_events/clusters > 14d, anomalies > 30d.
-        ("Prune",        lambda: prune_mod.prune_once()),
+        # Retention is enforced in the database by a pg_cron job
+        # (sql/008_pg_cron.sql), not here — the ingest loop no longer prunes.
     ]
 
     for name, fn in steps:

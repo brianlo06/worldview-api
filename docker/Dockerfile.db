@@ -1,12 +1,13 @@
-# Postgres image with BOTH PostGIS and pgvector.
+# Postgres image with PostGIS, pgvector, and pg_cron.
 #
 # The stock postgis/postgis:17-3.5 image gives us PostGIS but doesn't ship
-# pgvector — and 001_init.sql does `CREATE EXTENSION vector` on first boot,
-# which would fail without the .so. Add it from the PGDG apt repo that
-# the upstream postgres image already configures.
+# pgvector or pg_cron. 001_init.sql does `CREATE EXTENSION vector` on first
+# boot and 008_pg_cron.sql does `CREATE EXTENSION pg_cron` — both need their
+# .so present. Add them from the PGDG apt repo the upstream image configures.
+# pg_cron also requires shared_preload_libraries=pg_cron (set in compose.yaml).
 
 FROM postgis/postgis:17-3.5
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends postgresql-17-pgvector \
+ && apt-get install -y --no-install-recommends postgresql-17-pgvector postgresql-17-cron \
  && rm -rf /var/lib/apt/lists/*

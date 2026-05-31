@@ -29,7 +29,11 @@ services:
     command:
       - postgres
       - -c
-      - shared_preload_libraries=vector
+      - shared_preload_libraries=vector,pg_cron
+      - -c
+      # pg_cron's background worker connects to this database; the prune job
+      # in 008_pg_cron.sql is scheduled there.
+      - cron.database_name=${POSTGRES_DB:-worldview_prod}
       - -c
       - max_connections=50
     healthcheck:

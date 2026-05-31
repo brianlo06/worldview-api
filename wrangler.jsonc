@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "jarvisworlds-api",
+  "main": "worker.js",
+  "compatibility_date": "2026-05-24",
+
+  // Build + run the existing FastAPI image as a Cloudflare Container.
+  // wrangler builds from the Dockerfile each `wrangler deploy`.
+  "containers": [
+    {
+      "class_name": "Api",
+      "image": "./docker/Dockerfile",
+      // Build context = repo root so the Dockerfile's `COPY pyproject.toml ./`,
+      // `COPY src ./src`, `COPY scripts ./scripts` resolve correctly.
+      // (Without this, context defaults to dirname(image) = ./docker, and
+      // none of the source paths exist.)
+      "image_build_context": "./",
+      "max_instances": 1,
+      // basic = 1/4 vCPU, 1 GiB memory, 4 GB disk. Adequate for fastembed
+      // (~250 MB resident) + FastAPI (~100 MB) with headroom. Bump to
+      // standard-1 (4 GiB) if memory becomes the bottleneck.
+      "instance_type": "basic"
+    }
+  ],
+
+  // The container is exposed to the Worker as a Durable Object binding;
+  // env.API in worker.js resolves to the Api class.
+  "durable_objects": {
+    "bindings": [
+      { "name": "API", "class_name": "Api" }
+    ]
+  },
+
+  // First-time DO class registration. Containers use SQLite-backed DOs,
+  // so the migration goes in new_sqlite_classes.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Api"] }
+  ],
+
+  // Cron trigger: every 15 minutes, fire the scheduled() handler in
+  // worker.js, which POSTs to /admin/run-ingest in the container. Aligns
+  // with GDELT's 15-min publish cadence — fresh data within minutes of
+  // each upstream release.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
+}

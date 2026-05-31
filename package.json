@@ -1,0 +1,14 @@
+{
+  "name": "jarvisworlds-api-deploy",
+  "private": true,
+  "description": "Deploy tooling (wrangler) for the FastAPI service. Runtime is Python — see src/worldview_api/. This package.json exists only so wrangler is pinned to the repo.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "secret": "wrangler secret"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.1.0",
+    "wrangler": "^4.0.0"
+  }
+}

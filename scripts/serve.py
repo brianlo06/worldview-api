@@ -66,9 +66,14 @@ def main() -> None:
     # reload is a dev convenience; default off so production doesn't run the
     # file-watcher / double process. Set WORLDVIEW_RELOAD=1 locally to enable.
     reload = os.environ.get("WORLDVIEW_RELOAD") == "1"
+    # Bind address: 0.0.0.0 inside a container is required so the runtime
+    # (CF Containers, Docker, etc.) can reach the listener — 127.0.0.1
+    # only accepts loopback. Override with HOST=127.0.0.1 in dev if you
+    # want to keep the local API off the LAN.
+    host = os.environ.get("HOST", "0.0.0.0")
     uvicorn.run(
         "worldview_api.api:app",
-        host="127.0.0.1",
+        host=host,
         port=8088,
         reload=reload,
         log_config=LOG_CONFIG,

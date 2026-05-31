@@ -1,14 +1,32 @@
-# Caddy config for the worldview API edge.
+# Caddy config for the worldview all-in-one box.
 #
 # {$DOMAIN} is substituted from the container env (set in compose.yaml,
-# sourced from .env). Caddy automatically obtains + renews a Let's Encrypt
-# cert for api.{$DOMAIN} on first request — no manual ACME needed.
+# sourced from .env). Caddy automatically obtains + renews Let's Encrypt
+# certs for every site name below on first request — no manual ACME needed.
+#
+# Topology (Lightsail Option 1, single instance):
+#   {$DOMAIN}, www.{$DOMAIN}  -> frontend SPA (static dist/, this box)
+#   api.{$DOMAIN}             -> FastAPI service (api:8088, this box)
+# Frontend and API share the same instance but stay on separate origins,
+# so the API's CORS_ORIGINS must list the apex + www origins.
 
 {
     # ACME contact address. Optional but recommended.
     email admin@{$DOMAIN}
 }
 
+# --- Frontend: serve the built SPA on the apex + www -----------------------
+# The worldview/dist bundle is mounted read-only into the container at
+# /srv/frontend (see compose.yaml). try_files falls back to index.html so
+# client-side routes resolve without a 404 (SPA routing).
+{$DOMAIN}, www.{$DOMAIN} {
+    encode zstd gzip
+    root * /srv/frontend
+    try_files {path} /index.html
+    file_server
+}
+
+# --- API: reverse-proxy to the FastAPI service -----------------------------
 api.{$DOMAIN} {
     encode zstd gzip
 

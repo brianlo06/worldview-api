@@ -14,3 +14,7 @@ build/
 logs/
 *.log
 .DS_Store
+# Cloudflare Containers deploy tooling
+node_modules/
+.wrangler/
+package-lock.json

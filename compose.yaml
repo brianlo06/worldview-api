@@ -87,7 +87,9 @@ services:
       - "while true; do python scripts/run_all.py || true; sleep 900; done"
 
   # Caddy 2 with the caddy-ratelimit plugin baked in. Terminates TLS for
-  # api.${DOMAIN} via Let's Encrypt and rate-limits /search at the edge.
+  # ${DOMAIN}/www (frontend SPA) and api.${DOMAIN} (FastAPI) via Let's
+  # Encrypt, and rate-limits /search at the edge. All names resolve to this
+  # one box (Lightsail Option 1, all-in-one).
   caddy:
     build:
       context: .
@@ -101,6 +103,11 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Built frontend bundle, served read-only at the apex/www (see Caddyfile).
+      # Path is relative to this compose file, so `worldview` and `worldview-api`
+      # must sit side-by-side on the deploy host. Override with FRONTEND_DIST
+      # in .env if the build lives elsewhere.
+      - ${FRONTEND_DIST:-../worldview/dist}:/srv/frontend:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

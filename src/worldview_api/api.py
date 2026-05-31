@@ -1,16 +1,39 @@
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import AsyncIterator
+from pathlib import Path
+from typing import AsyncIterator, Literal
 from uuid import UUID
 
-from fastapi import FastAPI, Query, Response
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import close_pool, get_pool
+from .observability import (
+    KNOWN_SOURCES,
+    TIMEOUT_RETURNCODE,
+    append_to_ingest_log,
+    read_ingest_log_tail,
+)
+from .scoring import is_breaking, tier_where_clause
+
+log = logging.getLogger(__name__)
+
+# Module-level lock: prevents a second cron tick from spawning a parallel
+# ingest if a previous one is still running (ingest takes ~3 min, cron
+# fires every 15 min — usually safe, but guard anyway).
+_INGEST_LOCK = threading.Lock()
+_RUN_ALL_SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "run_all.py"
+
+# Container/process start time — used by /admin/status to report uptime.
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 class AnomalyOut(BaseModel):
@@ -181,6 +204,202 @@ def health(response: Response) -> dict[str, str]:
     return {"status": "ok", "db": "ok"}
 
 
+def _insert_ingest_run_start(skipped_lock_held: bool) -> int | None:
+    """Insert a starting `ingest_runs` row and return its id."""
+    try:
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ingest_runs (started_at, skipped_lock_held)
+                VALUES (NOW(), %s)
+                RETURNING id
+                """,
+                (skipped_lock_held,),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+    except Exception:
+        log.exception("ingest: failed to insert ingest_runs row")
+        return None
+
+
+def _update_ingest_run_finish(
+    row_id: int | None, returncode: int | None, notes: str | None = None,
+) -> None:
+    if row_id is None:
+        return
+    try:
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ingest_runs
+                SET finished_at = NOW(), returncode = %s, notes = %s
+                WHERE id = %s
+                """,
+                (returncode, notes, row_id),
+            )
+            conn.commit()
+    except Exception:
+        log.exception("ingest: failed to update ingest_runs row %s", row_id)
+
+
+def _run_ingest_subprocess() -> None:
+    """Spawn run_all.py in a child process. Runs in a Starlette threadpool
+    via BackgroundTasks so the response returns immediately. Subprocess
+    isolation means the ingest's CPU + memory don't fight the API's event
+    loop, and a crash in ingest can't take down the API.
+
+    Records each invocation in the `ingest_runs` table and appends the
+    subprocess's stdout+stderr to a rotating log file, so /admin/status
+    can surface what happened from outside the container.
+    """
+    if not _INGEST_LOCK.acquire(blocking=False):
+        log.warning("ingest: lock held — another run is in flight, skipping")
+        row_id = _insert_ingest_run_start(skipped_lock_held=True)
+        _update_ingest_run_finish(row_id, returncode=None, notes="lock held; skipped")
+        return
+
+    row_id = _insert_ingest_run_start(skipped_lock_held=False)
+    started = datetime.now(timezone.utc)
+    try:
+        log.info("ingest: starting subprocess (%s)", _RUN_ALL_SCRIPT)
+        proc = subprocess.run(
+            [sys.executable, str(_RUN_ALL_SCRIPT)],
+            check=False,
+            timeout=600,  # 10 min hard cap; typical run is ~3 min
+            capture_output=True,
+            text=True,
+        )
+        log.info("ingest: subprocess finished rc=%d", proc.returncode)
+        header = (
+            f"=== ingest run #{row_id} ===\n"
+            f"started_at: {started.isoformat()}\n"
+            f"finished_at: {datetime.now(timezone.utc).isoformat()}\n"
+            f"returncode: {proc.returncode}\n"
+        )
+        append_to_ingest_log(header, proc.stdout or "", proc.stderr or "")
+        _update_ingest_run_finish(row_id, returncode=proc.returncode)
+    except subprocess.TimeoutExpired as e:
+        log.error("ingest: subprocess timed out after 600s — killed")
+        # capture_output buffers the partial output on the exception.
+        stdout = (e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
+        stderr = (e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""))
+        header = (
+            f"=== ingest run #{row_id} TIMED OUT ===\n"
+            f"started_at: {started.isoformat()}\n"
+            f"finished_at: {datetime.now(timezone.utc).isoformat()}\n"
+            f"returncode: {TIMEOUT_RETURNCODE} (timeout)\n"
+        )
+        append_to_ingest_log(header, stdout, stderr)
+        _update_ingest_run_finish(row_id, returncode=TIMEOUT_RETURNCODE, notes="timed out after 600s")
+    except Exception as e:
+        log.exception("ingest: subprocess failed")
+        header = (
+            f"=== ingest run #{row_id} FAILED ===\n"
+            f"started_at: {started.isoformat()}\n"
+            f"finished_at: {datetime.now(timezone.utc).isoformat()}\n"
+            f"error: {type(e).__name__}: {e}\n"
+        )
+        append_to_ingest_log(header, "", str(e))
+        _update_ingest_run_finish(row_id, returncode=None, notes=f"exception: {type(e).__name__}: {e}")
+    finally:
+        _INGEST_LOCK.release()
+
+
+@app.post("/admin/run-ingest")
+def admin_run_ingest(
+    background_tasks: BackgroundTasks,
+    x_admin_token: str = Header(..., alias="X-Admin-Token"),
+) -> dict[str, str]:
+    """Trigger one ingest pass. Called by the CF cron worker every 15 min.
+    Returns 202 immediately; the actual work runs in a background thread.
+    Token-gated — must match settings.ingest_token (set as a wrangler secret).
+    """
+    if not settings.ingest_token:
+        # Defensive: refuse to run if the token isn't configured, otherwise
+        # an empty token would accept blank-header requests.
+        raise HTTPException(status_code=503, detail="ingest disabled")
+    if x_admin_token != settings.ingest_token:
+        raise HTTPException(status_code=401, detail="invalid token")
+    background_tasks.add_task(_run_ingest_subprocess)
+    return {"status": "queued"}
+
+
+@app.get("/admin/status")
+def admin_status(
+    x_admin_token: str = Header(..., alias="X-Admin-Token"),
+) -> dict:
+    """Snapshot of ingest pipeline state. Token-gated; same secret as
+    /admin/run-ingest. Read-only.
+
+    Returns container uptime + per-source watermarks (with explicit nulls
+    for known sources that have never produced) + the last 10 ingest runs
+    + the tail of the captured ingest log. Designed to answer "is ingest
+    working right now, and if not, where is it failing?" in one request.
+    """
+    if not settings.ingest_token:
+        raise HTTPException(status_code=503, detail="admin status disabled")
+    if x_admin_token != settings.ingest_token:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    now = datetime.now(timezone.utc)
+    uptime_seconds = int((now - _PROCESS_STARTED_AT).total_seconds())
+
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT source, last_seen_at FROM source_watermarks"
+        )
+        wm_rows = cur.fetchall()
+        cur.execute(
+            """
+            SELECT id, started_at, finished_at, returncode, skipped_lock_held, notes
+            FROM ingest_runs
+            ORDER BY started_at DESC
+            LIMIT 10
+            """
+        )
+        recent_runs_raw = cur.fetchall()
+
+    watermarks: dict[str, dict] = {}
+    seen_in_db = {src: ts for src, ts in wm_rows}
+    for src in KNOWN_SOURCES:
+        ts = seen_in_db.get(src)
+        watermarks[src] = {
+            "last_seen_at": ts.isoformat() if ts else None,
+        }
+    # Include any extra sources that DB has but code doesn't list, so a
+    # future ingester not yet wired into KNOWN_SOURCES still shows up.
+    for src, ts in seen_in_db.items():
+        if src not in watermarks:
+            watermarks[src] = {"last_seen_at": ts.isoformat() if ts else None}
+
+    def _run_row(r: tuple) -> dict:
+        rid, started, finished, rc, skipped, notes = r
+        return {
+            "id": rid,
+            "started_at": started.isoformat() if started else None,
+            "finished_at": finished.isoformat() if finished else None,
+            "returncode": rc,
+            "skipped_lock_held": skipped,
+            "notes": notes,
+        }
+
+    recent_runs = [_run_row(r) for r in recent_runs_raw]
+    last_run = recent_runs[0] if recent_runs else None
+
+    return {
+        "container": {
+            "uptime_seconds": uptime_seconds,
+            "started_at": _PROCESS_STARTED_AT.isoformat(),
+        },
+        "watermarks": watermarks,
+        "last_run": last_run,
+        "recent_runs": recent_runs,
+        "log_tail": read_ingest_log_tail(max_lines=200),
+    }
+
+
 @app.get("/anomalies", response_model=list[AnomalyOut])
 def anomalies() -> list[AnomalyOut]:
     """Active regions whose recent event rate has spiked past baseline+3σ.
@@ -310,7 +529,7 @@ def search(body: SearchRequest) -> list[SearchResultOut]:
             continue
         importance = r[12]
         event_count = r[10]
-        breaking = event_count >= 10 or (importance is not None and importance >= 0.85)
+        breaking = is_breaking(event_count, importance)
         results.append(
             SearchResultOut(
                 cluster_id=r[0],
@@ -340,6 +559,7 @@ def clusters(
     hours: int = Query(48, ge=1, le=720),
     min_events: int = Query(1, ge=1, le=100),
     limit: int = Query(500, ge=1, le=5000),
+    tier: Literal["all", "notable", "major", "top"] = Query("all"),
 ) -> list[ClusterOut]:
     # Ingest runs every 15 min; 30s CDN cache lets a public deploy survive
     # bursts without each visit hammering Postgres.
@@ -352,10 +572,12 @@ def clusters(
     other sources are behind the same story.
     """
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    tier_sql, tier_params = tier_where_clause(tier)
+    tier_clause = f"AND {tier_sql}" if tier_sql else ""
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT c.id,
                    e.title,
                    e.summary,
@@ -396,12 +618,13 @@ def clusters(
             WHERE c.last_seen >= %s
               AND c.event_count >= %s
               AND e.id IS NOT NULL
+              {tier_clause}
             ORDER BY coalesce(c.importance_score, 0) DESC,
                      c.event_count DESC,
                      c.last_seen DESC
             LIMIT %s
             """,
-            (since, min_events, limit),
+            (since, min_events, *tier_params, limit),
         )
         rows = cur.fetchall()
 
@@ -409,7 +632,7 @@ def clusters(
     for r in rows:
         importance = r[14]
         event_count = r[8]
-        breaking = event_count >= 10 or (importance is not None and importance >= 0.85)
+        breaking = is_breaking(event_count, importance)
         out.append(
             ClusterOut(
                 id=r[0],
@@ -469,7 +692,7 @@ def cluster_detail(cluster_id: UUID) -> ClusterDetailOut:
         members = cur.fetchall()
 
     importance = c[10]
-    breaking = c[5] >= 10 or (importance is not None and importance >= 0.85)
+    breaking = is_breaking(c[5], importance)
     return ClusterDetailOut(
         id=c[0],
         title=c[1],

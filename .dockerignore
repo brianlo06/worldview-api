@@ -27,4 +27,14 @@ tests/
 
 # Docs + checklists shouldn't bloat the image.
 DEPLOY.md
+CLOUDFLARE-DEPLOY.md
+ORACLE-DEPLOY.md
 README.md
+
+# Cloudflare deploy tooling — not part of the API runtime.
+wrangler.jsonc
+worker.js
+package.json
+package-lock.json
+node_modules/
+.wrangler/

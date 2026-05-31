@@ -65,16 +65,41 @@ GKG_COLUMNS: tuple[str, ...] = (
     "V2EXTRASXML",
 )
 
-# Theme-to-category map — these patterns are applied in order; first hit wins.
+# Theme-to-category map. `themes_to_category` counts regex hits across all
+# patterns and picks the category with the most matches; ties fall back to
+# the declaration order below (earlier categories win).
+# Note: do NOT add `TAX_` to any pattern — it's GDELT's taxonomy *prefix*
+# (TAX_FNCACT, TAX_ETHNICITY, TAX_WORLDLANGUAGES, ...), not a content signal.
+# ECON_* already covers genuine taxation themes (ECON_TAXATION, etc.).
+# Similarly, the politics pattern does NOT include bare `GOVERNMENT` — that
+# substring matches noise tokens like GENERAL_GOVERNMENT and WB_*_GOVERNMENT.
+# GDELT's actual government namespace is `GOV_*`, which is what we match.
 # Reference: http://data.gdeltproject.org/documentation/GKG-CATEGORY-TAXONOMY.txt
 _THEME_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(KILL|ATTACK|TERROR|MIL_|ARMEDCONFLICT|MILITARY_OPS|ETHNIC_CLEANSING|WMD|INSURGENC)", re.I), "conflict"),
     (re.compile(r"(EARTHQUAKE|VOLCANIC|VOLCANO|TSUNAMI|SEISMIC)", re.I), "quake"),
     (re.compile(r"(FLOOD|HURRICANE|TORNADO|CYCLONE|STORM|DROUGHT|WILDFIRE|BLIZZARD|TYPHOON|WEATHER_)", re.I), "weather"),
     (re.compile(r"(PROTEST|RIOT|STRIKE|DEMONSTRATION|ACTIVISM|CIVIL_UNREST)", re.I), "social"),
-    (re.compile(r"(ECON_|TRADE|FINANCE|BUSINESS|MARKETS|INFLATION|UNEMPLOYMENT|TAX_|CORRUPTION)", re.I), "business"),
-    (re.compile(r"(ELECTION|GOV_|GOVERNMENT|POLITICAL|DIPLOM|REBEL|REGIME|SANCTION|TREATY)", re.I), "politics"),
+    (re.compile(r"(ECON_|TRADE|FINANCE|BUSINESS|MARKETS|INFLATION|UNEMPLOYMENT|CORRUPTION)", re.I), "business"),
+    (re.compile(r"(ELECTION|GOV_|POLITICAL|DIPLOM|REBEL|REGIME|SANCTION|TREATY)", re.I), "politics"),
 )
+
+# GDELT attaches auxiliary taxonomy themes to articles independently of
+# article topic. They're useful for cross-referencing in research but they
+# inflate category counts when matched by substring. Tokens with these
+# prefixes are dropped before regex matching in `themes_to_category`.
+#   EPU_  — Economic Policy Uncertainty (Baker, Bloom, Davis 2016 dataset).
+#           e.g. EPU_POLICY_GOVERNMENT is about economic uncertainty, not
+#           government action.
+#   WB_   — World Bank topic taxonomy (thousands of codes). e.g.
+#           WB_678_DIGITAL_GOVERNMENT gets sprayed onto digital-economy
+#           articles regardless of topic.
+_NOISE_PREFIXES: tuple[str, ...] = ("EPU_", "WB_")
+
+# Specific known-noise tokens that don't have a useful prefix to filter on.
+# GENERAL_GOVERNMENT is a generic descriptor GDELT applies to most articles
+# that mention government in any context.
+_NOISE_TOKENS: frozenset[str] = frozenset({"GENERAL_GOVERNMENT"})
 _DEFAULT_CATEGORY = "politics"
 
 # Type weights for the location scorer. Each mention of a location contributes
@@ -103,6 +128,23 @@ _TYPE_TO_PRECISION: dict[int, str] = {
 
 # Tone score → importance bump
 _TONE_EXTREME_THRESHOLD = 5.0
+
+# importance_from_row constants. The 0..1 score combines four bounded signals
+# (tone extremity, theme richness, location richness, entity richness) on top
+# of a low base, so the *typical* GKG article lands mid-scale and only
+# multi-signal-rich content approaches 1.0. Retune by editing here.
+IMPORTANCE_BASE = 0.15
+# Denominators are deliberately large so the *typical* GKG article (which is
+# theme-heavy, location-heavy, and entity-heavy by GDELT's nature) doesn't
+# saturate any single term. Saturation should signal "this is an outlier",
+# not "this is the median."
+TONE_CAP, TONE_DIV = 0.25, 40.0
+THEME_CAP, THEME_DIV = 0.20, 120.0
+LOC_CAP, LOC_DIV = 0.15, 40.0
+# GKG has no per-article mention count in its CSV; entity richness
+# (V2ENHANCEDPERSONS + V2ENHANCEDORGANIZATIONS) serves the same role —
+# substantive news pieces name many people and organizations.
+ENTITY_CAP, ENTITY_DIV = 0.15, 200.0
 
 
 def _http_headers() -> dict[str, str]:
@@ -259,17 +301,37 @@ def type_to_precision(loc_type: int) -> str:
 def themes_to_category(themes_str: str | None) -> str:
     """Pick the dominant category by counting theme hits per category.
 
+    Tokenizes the GKG theme string by `;` and strips each token's `,offset`
+    suffix, then drops tokens that belong to known auxiliary GDELT taxonomies
+    (see `_NOISE_PREFIXES`, `_NOISE_TOKENS`) before applying the per-category
+    regexes. Counts matches per category; ties fall back to the declaration
+    order in `_THEME_PATTERNS`.
+
     First-match-wins picked the wrong category when a story had one tangential
     disaster theme (e.g. `NATURAL_DISASTER_EARTHQUAKE` on a trade article about
     Türkiye) alongside many themes from another category. Counting matches and
-    taking the majority avoids that. Ties fall back to the original priority
-    order in `_THEME_PATTERNS`.
+    taking the majority avoids that.
     """
     if not themes_str:
         return _DEFAULT_CATEGORY
+
+    filtered: list[str] = []
+    for raw in themes_str.split(";"):
+        tok = raw.split(",", 1)[0].strip()
+        if not tok:
+            continue
+        if tok in _NOISE_TOKENS:
+            continue
+        if any(tok.startswith(p) for p in _NOISE_PREFIXES):
+            continue
+        filtered.append(tok)
+    if not filtered:
+        return _DEFAULT_CATEGORY
+    filtered_str = ";".join(filtered)
+
     counts: dict[str, int] = {}
     for pattern, category in _THEME_PATTERNS:
-        hits = len(pattern.findall(themes_str))
+        hits = len(pattern.findall(filtered_str))
         if hits:
             counts[category] = counts.get(category, 0) + hits
     if not counts:
@@ -290,21 +352,33 @@ def _to_float(s: str | None) -> float | None:
 def importance_from_row(row: dict[str, str], theme_count: int, loc_count: int) -> float:
     """Heuristic 0..1 importance for a GKG document.
 
-    Combines: tone extremity (|avg_tone|), number of themes, number of mentioned
-    locations. A high-tone article with rich theme + geo coverage is treated as
-    more important.
+    Combines four bounded signals on a low base so typical content lands
+    mid-scale and only multi-signal-rich articles approach 1.0:
+      - tone extremity (|avg_tone| from V15TONE)
+      - theme richness (theme_count)
+      - location richness (loc_count)
+      - entity richness (persons + organizations counted from V2ENHANCED* fields)
+    Constants live at module top to keep retuning a one-place edit.
     """
-    base = 0.35
+    base = IMPORTANCE_BASE
 
     # V15TONE: comma-separated [avg_tone, positive, negative, polarity, ...]
     tone_str = row.get("V15TONE") or ""
     parts = tone_str.split(",")
     if parts:
         avg_tone = _to_float(parts[0]) or 0.0
-        base += min(0.20, abs(avg_tone) / 15.0)
+        base += min(TONE_CAP, abs(avg_tone) / TONE_DIV)
 
-    base += min(0.20, theme_count / 25.0)
-    base += min(0.15, loc_count / 8.0)
+    base += min(THEME_CAP, theme_count / THEME_DIV)
+    base += min(LOC_CAP, loc_count / LOC_DIV)
+
+    persons = row.get("V2ENHANCEDPERSONS") or ""
+    orgs = row.get("V2ENHANCEDORGANIZATIONS") or ""
+    entity_count = sum(
+        1 for s in (persons + ";" + orgs).split(";") if s.strip()
+    )
+    base += min(ENTITY_CAP, entity_count / ENTITY_DIV)
+
     return max(0.0, min(1.0, base))
 
 

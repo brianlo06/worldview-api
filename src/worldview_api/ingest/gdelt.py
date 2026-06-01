@@ -111,6 +111,16 @@ def _action_geo_precision(action_geo_type: str | None) -> str:
     )
 
 
+def _has_alpha(s: str) -> bool:
+    """True iff s contains at least one Unicode letter.
+
+    Unicode-aware (not ASCII-only) so non-Latin headlines — Turkish, Arabic,
+    Chinese, etc. — count as real titles. A purely numeric article ID (the
+    junk we're guarding against) has no letters in any script.
+    """
+    return any(ch.isalpha() for ch in s)
+
+
 def humanize_url(url: str) -> tuple[str, str]:
     """Best-effort title and source-outlet from a URL.
 
@@ -132,7 +142,10 @@ def humanize_url(url: str) -> tuple[str, str]:
     title = last.replace("-", " ").replace("_", " ").strip()
     if len(title) > 140:
         title = title[:140]
-    if not title:
+    # A slug with no letters (e.g. a numeric article ID like "3952366") is not
+    # a usable placeholder — fall back to the outlet so we never display a bare
+    # number. Enrichment will replace it with the real og:title if it can.
+    if not title or not _has_alpha(title):
         title = outlet or "untitled"
     return title.title(), outlet
 

@@ -148,8 +148,9 @@ def _select_pending(pool: ConnectionPool, limit: int) -> list[tuple[str, str]]:
 def _write_back(
     pool: ConnectionPool,
     results: Iterable[tuple[str, str, dict[str, str | None]]],
-) -> int:
+) -> tuple[int, int]:
     ok = 0
+    dropped = 0
     with pool.connection() as conn, conn.cursor() as cur:
         for event_id, status, meta in results:
             if status == "ok":
@@ -172,17 +173,31 @@ def _write_back(
                 )
                 ok += 1
             else:
+                # Enrichment failed, so the title is still the URL-derived
+                # placeholder. Drop the event when that placeholder carries no
+                # information: either it has no letters (numeric article ID) or
+                # it is just the outlet name (humanize_url's fallback for a
+                # letterless slug, e.g. title "Aa.Com.Tr" == outlet "aa.com.tr").
+                # Readable word-slug placeholders ("Trump Xi Meeting") are kept.
                 cur.execute(
-                    """
-                    UPDATE events
-                    SET scraped_at = NOW(),
-                        scrape_status = %s
-                    WHERE id = %s
-                    """,
-                    (status, event_id),
+                    "DELETE FROM events WHERE id = %s "
+                    "AND (title !~ '[[:alpha:]]' OR lower(title) = lower(source_outlet))",
+                    (event_id,),
                 )
+                if cur.rowcount:
+                    dropped += 1
+                else:
+                    cur.execute(
+                        """
+                        UPDATE events
+                        SET scraped_at = NOW(),
+                            scrape_status = %s
+                        WHERE id = %s
+                        """,
+                        (status, event_id),
+                    )
         conn.commit()
-    return ok
+    return ok, dropped
 
 
 async def enrich_batch(limit: int = 200, concurrency: int = 8) -> dict[str, int | str]:
@@ -198,7 +213,7 @@ async def enrich_batch(limit: int = 200, concurrency: int = 8) -> dict[str, int 
             *(_fetch_one(client, sem, eid, url) for eid, url in targets)
         )
 
-    enriched = _write_back(pool, results)
+    enriched, dropped = _write_back(pool, results)
     by_status: dict[str, int] = {}
     for _, status, _ in results:
         by_status[status] = by_status.get(status, 0) + 1
@@ -206,6 +221,7 @@ async def enrich_batch(limit: int = 200, concurrency: int = 8) -> dict[str, int 
         "status": "ok",
         "attempted": len(targets),
         "enriched": enriched,
+        "dropped": dropped,
         "by_status": by_status,  # type: ignore[dict-item]
     }
 

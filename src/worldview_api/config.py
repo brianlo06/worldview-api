@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str = "https://integrate.api.nvidia.com/v1"
     llm_model: str = "deepseek-ai/deepseek-v4-pro"
+    # Max summarizer requests/min. The NVIDIA free NIM tier allows 40 RPM per
+    # account, shared across projects; 10 leaves ~30 for everything else.
+    llm_max_rpm: int = 10
     # Set to false to skip the summarization step entirely.
     # Clustering and dedupe still run; cluster cards just show the
     # representative article's original headline instead of an AP-style

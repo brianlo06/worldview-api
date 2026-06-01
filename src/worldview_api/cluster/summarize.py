@@ -14,6 +14,7 @@ None so the cluster simply keeps its existing headline.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Sequence
 
 import openai
@@ -24,6 +25,40 @@ from ..config import settings
 from ..db import get_pool
 
 log = logging.getLogger(__name__)
+
+# Default backoff (seconds) when a 429 carries no Retry-After header.
+_RATE_LIMIT_BACKOFF_S = 5.0
+
+# Min-interval rate limiter. The NVIDIA free tier caps the account at 40 RPM
+# shared across projects; we pace summarizer calls to settings.llm_max_rpm.
+# The summarizer loop is strictly sequential/single-threaded, so a single
+# monotonic timestamp is sufficient — revisit with a lock if it ever
+# parallelizes.
+_last_request_monotonic = 0.0
+
+
+def _pace() -> None:
+    """Block until at least 60/llm_max_rpm seconds have passed since the last call."""
+    global _last_request_monotonic
+    rpm = max(1, settings.llm_max_rpm)
+    min_interval = 60.0 / rpm
+    wait = _last_request_monotonic + min_interval - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_monotonic = time.monotonic()
+
+
+def _retry_after_seconds(err: Exception) -> float | None:
+    """Best-effort parse of a Retry-After header (seconds) from a 429 error."""
+    resp = getattr(err, "response", None)
+    headers = getattr(resp, "headers", None)
+    if not headers:
+        return None
+    val = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        return float(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class ClusterSummary(BaseModel):
@@ -111,7 +146,14 @@ def _get_client() -> OpenAI:
         raise RuntimeError(
             "LLM_API_KEY is not set — add it to worldview-api/.env"
         )
-    return OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key)
+    # max_retries=0: the SDK's built-in retries fire rapidly and bypass our
+    # _pace() throttle, which would blow the shared 40-RPM budget. We do our
+    # own paced single retry on 429 instead.
+    return OpenAI(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        max_retries=0,
+    )
 
 
 def _parse_summary(content: str) -> ClusterSummary | None:
@@ -209,6 +251,7 @@ def _summarize_one(
     ]
 
     def _call(strict: bool):
+        _pace()  # rate-limit every request (primary, fallback, and 429 retry)
         kwargs: dict = dict(
             model=settings.llm_model,
             messages=messages,
@@ -224,11 +267,22 @@ def _summarize_one(
             kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
         return client.chat.completions.create(**kwargs)
 
+    def _attempt():
+        try:
+            return _call(strict=True)
+        except openai.BadRequestError:
+            return _call(strict=False)
+
     try:
         try:
-            response = _call(strict=True)
-        except openai.BadRequestError:
-            response = _call(strict=False)
+            response = _attempt()
+        except openai.RateLimitError as e:
+            # Shared 40-RPM account budget exceeded (often another project).
+            # Back off once — honor Retry-After if present — then retry.
+            backoff = _retry_after_seconds(e) or _RATE_LIMIT_BACKOFF_S
+            log.info("cluster %s: 429 rate-limited, backing off %.1fs", cluster_id, backoff)
+            time.sleep(backoff)
+            response = _attempt()
 
         content = response.choices[0].message.content if response.choices else ""
         summary = _parse_summary(content or "")

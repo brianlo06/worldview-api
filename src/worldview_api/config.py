@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Max summarizer requests/min. The NVIDIA free NIM tier allows 40 RPM per
     # account, shared across projects; 10 leaves ~30 for everything else.
     llm_max_rpm: int = 10
+    # Clusters summarized per ingest cycle. At ~96 cycles/day, 5 ≈ 480 req/day
+    # (under free-tier daily caps like Gemini's 1,500/day); 20 ≈ 1,920/day.
+    summarizer_batch_size: int = 20
     # Set to false to skip the summarization step entirely.
     # Clustering and dedupe still run; cluster cards just show the
     # representative article's original headline instead of an AP-style

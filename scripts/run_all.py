@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 
+from worldview_api.config import settings
 from worldview_api.analyze import anomalies as anomalies_mod
 from worldview_api.cluster import assign as cluster_assign
 from worldview_api.cluster import summarize as cluster_summarize
@@ -45,7 +46,7 @@ def main() -> None:
         ("Currencies",   lambda: currencies.ingest_currencies_once()),
         ("Embedding",    lambda: embed_mod.embed_batch_once()),
         ("Clustering",   lambda: cluster_assign.cluster_assign_once()),
-        ("Summarization",lambda: cluster_summarize.summarize_pending(limit=20)),
+        ("Summarization",lambda: cluster_summarize.summarize_pending(limit=settings.summarizer_batch_size)),
         ("Anomalies",    lambda: anomalies_mod.run_anomalies_once()),
         # Retention is enforced in the database by a pg_cron job
         # (sql/008_pg_cron.sql), not here — the ingest loop no longer prunes.

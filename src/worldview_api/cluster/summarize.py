@@ -261,10 +261,14 @@ def _summarize_one(
             stream=False,
         )
         if strict:
-            # JSON mode + disable DeepSeek "thinking". Both are provider-specific;
-            # the fallback path drops them and relies on the prompt + _parse_summary.
+            # JSON mode (broadly supported). The "thinking" toggle is specific
+            # to DeepSeek-on-NVIDIA NIM and 400s elsewhere (e.g. Gemini), so
+            # only send it to those endpoints; the fallback path drops both and
+            # relies on the prompt + _parse_summary.
             kwargs["response_format"] = {"type": "json_object"}
-            kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
+            base = (settings.llm_base_url or "").lower()
+            if "nvidia" in base or "deepseek" in base:
+                kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
         return client.chat.completions.create(**kwargs)
 
     def _attempt():

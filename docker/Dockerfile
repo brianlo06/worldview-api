@@ -21,12 +21,12 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
 
-# pyproject lists the core deps. fastembed / anthropic / numpy / pgvector
+# pyproject lists the core deps. fastembed / openai / numpy / pgvector
 # are imported by the runtime code but not yet declared as project deps —
 # install them explicitly so the image is self-contained.
 RUN pip install -e . \
         fastembed \
-        anthropic \
+        openai \
         numpy \
         pgvector
 

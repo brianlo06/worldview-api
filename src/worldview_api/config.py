@@ -8,13 +8,15 @@ class Settings(BaseSettings):
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     gdelt_user_agent: str = "worldview-dev/0.1"
 
-    # Anthropic Claude (used by cluster summarizer)
-    anthropic_api_key: str | None = None
-    claude_summarizer_model: str = "claude-haiku-4-5"
-    # Set to false to skip the Claude summarization step entirely.
+    # LLM for the cluster summarizer. Provider-agnostic: any OpenAI-compatible
+    # chat-completions endpoint. Defaults to NVIDIA's hosted DeepSeek.
+    llm_api_key: str | None = None
+    llm_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_model: str = "deepseek-ai/deepseek-v4-pro"
+    # Set to false to skip the summarization step entirely.
     # Clustering and dedupe still run; cluster cards just show the
     # representative article's original headline instead of an AP-style
-    # synthesized one. Saves the ~$10-15/mo Anthropic spend.
+    # synthesized one. Avoids LLM API spend.
     summarizer_enabled: bool = True
 
     # Cluster tuning

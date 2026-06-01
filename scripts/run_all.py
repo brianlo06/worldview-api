@@ -8,7 +8,7 @@ Suitable for scheduling via launchd. Order:
     5. Currencies (FX rates)
     6. Embedding pass (local fastembed)
     7. Cluster assignment (greedy kNN via pgvector)
-    8. Cluster summarization (Claude Haiku)
+    8. Cluster summarization (NVIDIA DeepSeek)
 
 Each step is independent — if one fails, the next still runs.
 """

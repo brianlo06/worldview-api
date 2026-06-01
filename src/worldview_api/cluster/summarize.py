@@ -1,13 +1,14 @@
-"""Cluster summarization via Claude Haiku 4.5.
+"""Cluster summarization via an OpenAI-compatible LLM (NVIDIA DeepSeek).
 
 When a cluster grows past a milestone or hasn't been summarized recently,
 we regenerate its title + summary from the top-K representative members
 (closest to the centroid embedding).
 
-Uses `messages.parse()` with a Pydantic model so the response is validated
-JSON without manual parsing. `cache_control` is set on the system block —
-it's a no-op if the prefix is below Haiku 4.5's 4096-token cache threshold,
-but lets us scale the prompt up later without code changes.
+Provider is config-driven (`llm_base_url` / `llm_model` / `llm_api_key`),
+defaulting to NVIDIA's hosted DeepSeek. We request JSON mode and validate the
+response into the `ClusterSummary` Pydantic model; a tolerant fallback extracts
+the first JSON object if a model wraps it in prose. Per-cluster failures return
+None so the cluster simply keeps its existing headline.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
-import anthropic
-from pydantic import BaseModel, Field
+import openai
+from openai import OpenAI
+from pydantic import BaseModel, Field, ValidationError
 
 from ..config import settings
 from ..db import get_pool
@@ -96,15 +98,37 @@ When members come from one outlet only (cluster size 1), still neutralize the \
 phrasing — strip clickbait, opinion words, and excessive adjectives. Do not \
 invent details that aren't in any of the provided articles. If the geographic \
 location is ambiguous, pick the most-cited one and don't speculate.
+
+Output format:
+Respond with ONLY a single JSON object and nothing else — no markdown fences, \
+no commentary:
+{"title": "<the headline>", "summary": "<the 2-3 sentence summary>"}
 """
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
+def _get_client() -> OpenAI:
+    if not settings.llm_api_key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set — add it to worldview-api/.env"
+            "LLM_API_KEY is not set — add it to worldview-api/.env"
         )
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key)
+
+
+def _parse_summary(content: str) -> ClusterSummary | None:
+    """Validate the model output into ClusterSummary, tolerant of wrapping prose."""
+    content = (content or "").strip()
+    try:
+        return ClusterSummary.model_validate_json(content)
+    except ValidationError:
+        pass
+    # Fallback: pull the first {...} block (handles fences/prose around the JSON).
+    start, end = content.find("{"), content.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return ClusterSummary.model_validate_json(content[start : end + 1])
+        except ValidationError:
+            return None
+    return None
 
 
 def _select_pending_clusters(limit: int) -> list[tuple]:
@@ -175,41 +199,54 @@ def _format_user_prompt(cluster_id: str, members: Sequence[tuple]) -> str:
 
 
 def _summarize_one(
-    client: anthropic.Anthropic,
+    client: OpenAI,
     cluster_id: str,
     members: Sequence[tuple],
 ) -> ClusterSummary | None:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": _format_user_prompt(cluster_id, members)},
+    ]
+
+    def _call(strict: bool):
+        kwargs: dict = dict(
+            model=settings.llm_model,
+            messages=messages,
+            temperature=0.3,
+            top_p=0.95,
+            max_tokens=1024,
+            stream=False,
+        )
+        if strict:
+            # JSON mode + disable DeepSeek "thinking". Both are provider-specific;
+            # the fallback path drops them and relies on the prompt + _parse_summary.
+            kwargs["response_format"] = {"type": "json_object"}
+            kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
+        return client.chat.completions.create(**kwargs)
+
     try:
-        response = client.messages.parse(
-            model=settings.claude_summarizer_model,
-            max_tokens=400,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[
-                {
-                    "role": "user",
-                    "content": _format_user_prompt(cluster_id, members),
-                }
-            ],
-            output_format=ClusterSummary,
-        )
+        try:
+            response = _call(strict=True)
+        except openai.BadRequestError:
+            response = _call(strict=False)
+
+        content = response.choices[0].message.content if response.choices else ""
+        summary = _parse_summary(content or "")
+        if summary is None:
+            log.warning("cluster %s: could not parse LLM response: %.200s", cluster_id, content)
+            return None
+
         usage = response.usage
-        log.info(
-            "summarized %s — input=%d cache_create=%d cache_read=%d output=%d",
-            cluster_id,
-            usage.input_tokens,
-            getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            getattr(usage, "cache_read_input_tokens", 0) or 0,
-            usage.output_tokens,
-        )
-        return response.parsed_output
-    except anthropic.APIStatusError as e:
-        log.warning("cluster %s: claude API %s: %s", cluster_id, e.status_code, e.message)
+        if usage is not None:
+            log.info(
+                "summarized %s — prompt=%d completion=%d",
+                cluster_id,
+                getattr(usage, "prompt_tokens", 0) or 0,
+                getattr(usage, "completion_tokens", 0) or 0,
+            )
+        return summary
+    except openai.APIStatusError as e:
+        log.warning("cluster %s: LLM API %s: %s", cluster_id, e.status_code, e)
         return None
     except Exception as e:  # noqa: BLE001
         log.warning("cluster %s: unexpected error: %s", cluster_id, e)

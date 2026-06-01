@@ -37,8 +37,15 @@ class RedactTests(unittest.TestCase):
         self.assertIn("sk-ant-[REDACTED]", out)
         self.assertIn("invalid api key", out)
 
+    def test_nvidia_key_redacted(self):
+        line = "openai.AuthenticationError: invalid key nvapi-abc123_DEF-xyz received"
+        out = observability.redact(line)
+        self.assertNotIn("abc123_DEF-xyz", out)
+        self.assertIn("nvapi-[REDACTED]", out)
+        self.assertIn("invalid key", out)
+
     def test_env_var_assignment_redacted(self):
-        for var in ["DATABASE_URL", "ANTHROPIC_API_KEY", "INGEST_TOKEN"]:
+        for var in ["DATABASE_URL", "LLM_API_KEY", "ANTHROPIC_API_KEY", "INGEST_TOKEN"]:
             with self.subTest(var=var):
                 line = f"setting {var}=some-secret-value"
                 out = observability.redact(line)

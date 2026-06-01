@@ -64,10 +64,15 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"sk-ant-[A-Za-z0-9_\-]+"),
         "sk-ant-[REDACTED]",
     ),
+    # nvapi-anything (NVIDIA)  →  nvapi-[REDACTED]
+    (
+        re.compile(r"nvapi-[A-Za-z0-9_\-]+"),
+        "nvapi-[REDACTED]",
+    ),
     # KEY=VALUE for sensitive env names
     (
         re.compile(
-            r"\b(DATABASE_URL|ANTHROPIC_API_KEY|INGEST_TOKEN)\s*=\s*\S+",
+            r"\b(DATABASE_URL|LLM_API_KEY|ANTHROPIC_API_KEY|INGEST_TOKEN)\s*=\s*\S+",
             re.IGNORECASE,
         ),
         r"\1=[REDACTED]",

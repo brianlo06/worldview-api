@@ -14,7 +14,6 @@ lastupdate.txt (events / mentions / gkg).
 from __future__ import annotations
 
 import csv
-import hashlib
 import html
 import io
 import logging
@@ -27,12 +26,12 @@ from urllib.parse import urlparse
 import httpx
 from psycopg.types.json import Jsonb
 
-from ..config import settings
 from ..db import get_pool
+from .common import GDELT_LASTUPDATE_URL, url_hash
+from .common import http_headers as _http_headers
+from .common import parse_gdelt_timestamp as parse_gkg_date
 
 log = logging.getLogger(__name__)
-
-GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # GKG 2.1 column order, in the order they appear in the .csv file.
 GKG_COLUMNS: tuple[str, ...] = (
@@ -145,10 +144,6 @@ LOC_CAP, LOC_DIV = 0.15, 40.0
 # (V2ENHANCEDPERSONS + V2ENHANCEDORGANIZATIONS) serves the same role —
 # substantive news pieces name many people and organizations.
 ENTITY_CAP, ENTITY_DIV = 0.15, 200.0
-
-
-def _http_headers() -> dict[str, str]:
-    return {"User-Agent": settings.gdelt_user_agent}
 
 
 def fetch_latest_gkg_url() -> str:
@@ -380,20 +375,6 @@ def importance_from_row(row: dict[str, str], theme_count: int, loc_count: int) -
     base += min(ENTITY_CAP, entity_count / ENTITY_DIV)
 
     return max(0.0, min(1.0, base))
-
-
-def parse_gkg_date(s: str | None) -> datetime:
-    s = (s or "").strip()
-    try:
-        if len(s) == 14:
-            return datetime.strptime(s, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    except ValueError:
-        pass
-    return datetime.now(tz=timezone.utc)
-
-
-def url_hash(url: str) -> str:
-    return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
 
 
 def _is_brand_only_title(title: str, outlet_host: str) -> bool:

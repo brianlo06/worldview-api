@@ -10,7 +10,6 @@ Idempotent: safe to run repeatedly; rows seen before are skipped.
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import logging
 import zipfile
@@ -21,13 +20,13 @@ from urllib.parse import urlparse
 import httpx
 from psycopg.types.json import Jsonb
 
-from ..config import settings
 from ..db import get_pool
 from .categories import breaking_from_row, cameo_to_category, importance_from_row
+from .common import GDELT_LASTUPDATE_URL, url_hash
+from .common import http_headers as _http_headers
+from .common import parse_gdelt_timestamp as parse_gdelt_date
 
 log = logging.getLogger(__name__)
-
-GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # Canonical GDELT 2.0 events column ordering (61 columns).
 # Source: http://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf
@@ -53,10 +52,6 @@ EVENT_COLUMNS: tuple[str, ...] = (
     "ActionGeo_Long", "ActionGeo_FeatureID",
     "DATEADDED", "SOURCEURL",
 )
-
-
-def _http_headers() -> dict[str, str]:
-    return {"User-Agent": settings.gdelt_user_agent}
 
 
 def fetch_latest_url() -> str:
@@ -85,10 +80,6 @@ def download_events_csv(url: str) -> list[dict[str, str]]:
                     raw_row = raw_row + [""] * (len(EVENT_COLUMNS) - len(raw_row))
                 rows.append(dict(zip(EVENT_COLUMNS, raw_row)))
     return rows
-
-
-def url_hash(url: str) -> str:
-    return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
 
 
 # ActionGeo_Type codes use the same numbering as GKG location types:
@@ -148,18 +139,6 @@ def humanize_url(url: str) -> tuple[str, str]:
     if not title or not _has_alpha(title):
         title = outlet or "untitled"
     return title.title(), outlet
-
-
-def parse_gdelt_date(s: str) -> datetime:
-    s = (s or "").strip()
-    try:
-        if len(s) == 14:
-            return datetime.strptime(s, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-        if len(s) == 8:
-            return datetime.strptime(s, "%Y%m%d").replace(tzinfo=timezone.utc)
-    except ValueError:
-        pass
-    return datetime.now(tz=timezone.utc)
 
 
 def ingest_once() -> dict[str, Any]:

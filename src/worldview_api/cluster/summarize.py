@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..config import settings
 from ..db import get_pool
+from ..llm import get_client as _get_client
+from ..llm import retry_after_seconds as _retry_after_seconds
 
 log = logging.getLogger(__name__)
 
@@ -46,19 +48,6 @@ def _pace() -> None:
     if wait > 0:
         time.sleep(wait)
     _last_request_monotonic = time.monotonic()
-
-
-def _retry_after_seconds(err: Exception) -> float | None:
-    """Best-effort parse of a Retry-After header (seconds) from a 429 error."""
-    resp = getattr(err, "response", None)
-    headers = getattr(resp, "headers", None)
-    if not headers:
-        return None
-    val = headers.get("retry-after") or headers.get("Retry-After")
-    try:
-        return float(val) if val is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 class ClusterSummary(BaseModel):
@@ -139,21 +128,6 @@ Respond with ONLY a single JSON object and nothing else — no markdown fences, 
 no commentary:
 {"title": "<the headline>", "summary": "<the 2-3 sentence summary>"}
 """
-
-
-def _get_client() -> OpenAI:
-    if not settings.llm_api_key:
-        raise RuntimeError(
-            "LLM_API_KEY is not set — add it to worldview-api/.env"
-        )
-    # max_retries=0: the SDK's built-in retries fire rapidly and bypass our
-    # _pace() throttle, which would blow the shared 40-RPM budget. We do our
-    # own paced single retry on 429 instead.
-    return OpenAI(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        max_retries=0,
-    )
 
 
 def _parse_summary(content: str) -> ClusterSummary | None:

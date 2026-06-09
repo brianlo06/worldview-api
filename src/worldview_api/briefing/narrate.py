@@ -24,8 +24,9 @@ import openai
 from pydantic import BaseModel, Field, ValidationError
 
 from ..ask.places import country_name
-from ..cluster.summarize import _get_client
 from ..config import settings
+from ..llm import get_client as _get_client
+from ..llm import retry_after_seconds as _retry_after_seconds
 from .budget import budget
 
 log = logging.getLogger(__name__)
@@ -38,27 +39,6 @@ log = logging.getLogger(__name__)
 _RATE_LIMIT_BACKOFF_S = 2.5
 _RATE_LIMIT_MAX_WAIT_S = 4.0
 _RATE_LIMIT_RETRIES = 2
-
-
-def _retry_after_seconds(err: Exception) -> float | None:
-    """Best-effort parse of how long to wait from a 429 — header first, then the
-    'Please retry in 2.23s' hint Gemini puts in the error body."""
-    resp = getattr(err, "response", None)
-    headers = getattr(resp, "headers", None)
-    if headers:
-        val = headers.get("retry-after") or headers.get("Retry-After")
-        try:
-            if val is not None:
-                return float(val)
-        except (TypeError, ValueError):
-            pass
-    m = re.search(r"retry in ([\d.]+)s", str(getattr(err, "message", "") or err))
-    if m:
-        try:
-            return float(m.group(1))
-        except ValueError:
-            pass
-    return None
 
 
 class BriefingInput(TypedDict):

@@ -111,6 +111,10 @@ def briefing(response: Response) -> BriefingResponse:
         }
         for r in rows
     ]
+    # Title-quality gate: a representative titled "World" or "Top Stories" is
+    # a scraped section page, not a story — junk input the narrator can only
+    # waffle about. Real headlines have at least a few words.
+    candidates = [c for c in candidates if len((c["title"] or "").split()) >= 3]
     selected = _diversify(candidates, n)
 
     if not selected:

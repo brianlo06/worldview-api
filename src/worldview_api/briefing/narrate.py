@@ -179,8 +179,11 @@ were given, in the SAME order, reusing the given id verbatim:
 
 
 def _location_label(story: BriefingInput) -> str | None:
-    city = story.get("city")
-    if city:
+    city = (story.get("city") or "").strip()
+    # One-or-two-letter "cities" are stray FIPS/ADM codes ("SF" = South
+    # Africa), and the narrator would expand them into the wrong place
+    # ("San Francisco"). Prefer the country name instead.
+    if city and len(city) > 2:
         return city
     cc = story.get("country_code")
     if cc:

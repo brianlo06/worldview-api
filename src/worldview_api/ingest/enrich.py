@@ -21,7 +21,7 @@ from psycopg_pool import ConnectionPool
 from urllib.parse import urlparse
 
 from ..db import get_pool
-from .gdelt_gkg import _is_brand_only_title
+from .gdelt_gkg import _is_junk_title
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ async def _fetch_one(
                 return event_id, "no_title", {}
             host = (urlparse(url).netloc or "").lower()
             host = host[4:] if host.startswith("www.") else host
-            if _is_brand_only_title(meta["title"], host):
+            if _is_junk_title(meta["title"], host):
                 return event_id, "brand_only_title", {}
             return event_id, "ok", meta
         except httpx.TimeoutException:

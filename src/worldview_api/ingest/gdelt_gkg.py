@@ -395,6 +395,28 @@ def _is_brand_only_title(title: str, outlet_host: str) -> bool:
     return brand in t_norm and len(t_norm) <= len(brand) + 4
 
 
+# Section/index page names that show up as <title> when GDELT links a site's
+# section front rather than an article (observed: arabnews.com page titled
+# "World" becoming a high-ranked "story"). Matched whole-title after
+# normalization — a real headline never consists solely of one of these.
+_GENERIC_SECTION_TITLES: frozenset[str] = frozenset({
+    "world", "world news", "news", "home", "homepage", "latest news",
+    "breaking news", "top stories", "opinion", "editorial", "sports", "sport",
+    "business", "politics", "entertainment", "lifestyle", "culture", "health",
+    "technology", "tech", "science", "video", "videos", "photos", "live",
+    "local news", "national", "international", "africa", "americas", "asia",
+    "europe", "middle east", "uk", "us",
+})
+
+
+def _is_junk_title(title: str, outlet_host: str) -> bool:
+    """Brand-only titles plus bare section names ("World", "Top Stories")."""
+    if _is_brand_only_title(title, outlet_host):
+        return True
+    t = re.sub(r"[\s|·\-–—:]+", " ", title.strip().lower()).strip()
+    return t in _GENERIC_SECTION_TITLES
+
+
 def _clean_loc_short(loc_name: str | None, geo_precision: str) -> str | None:
     """Normalize the location name into the `city` column value.
 
@@ -402,12 +424,14 @@ def _clean_loc_short(loc_name: str | None, geo_precision: str) -> str | None:
     stray leading punctuation that GDELT sometimes emits (e.g. "-Queens",
     "-River Falls"), and returns None for country-precision locations or when
     what remains doesn't start with a letter (would be junk like a digit or
-    a stray symbol).
+    a stray symbol). One-or-two-letter remainders are FIPS/ADM codes, not
+    city names ("SF" = South Africa), and would mislead anything that reads
+    the field as a place name — dropped.
     """
     if not loc_name or geo_precision == "country":
         return None
     short = loc_name.split(",")[0].strip().lstrip("-., ").strip()
-    if not short or not short[0].isalpha():
+    if len(short) <= 2 or not short[0].isalpha():
         return None
     return short
 
@@ -456,7 +480,7 @@ def ingest_gkg_once() -> dict[str, Any]:
                     continue
 
                 outlet_host = humanize_outlet(src_url, r.get("V2SOURCECOMMONNAME"))
-                if _is_brand_only_title(title, outlet_host):
+                if _is_junk_title(title, outlet_host):
                     skipped += 1
                     continue
 

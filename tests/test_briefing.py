@@ -231,3 +231,15 @@ class DiversifyTests(unittest.TestCase):
         rows = [{"category": None, "id": i} for i in range(4)]
         picked = _diversify(rows, 3)
         self.assertEqual(len(picked), 3)
+
+
+class LocationLabelTests(unittest.TestCase):
+    def test_code_like_city_falls_back_to_country(self):
+        story = {"cluster_id": "x", "title": "t", "summary": None,
+                 "city": "SF", "country_code": "ZA"}
+        self.assertEqual(N._location_label(story), "South Africa")
+
+    def test_real_city_used(self):
+        story = {"cluster_id": "x", "title": "t", "summary": None,
+                 "city": "Johannesburg", "country_code": "ZA"}
+        self.assertEqual(N._location_label(story), "Johannesburg")

@@ -53,3 +53,36 @@ class HumanizeUrlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JunkTitleTests(unittest.TestCase):
+    """Section-page titles ("World") and brand titles are junk, headlines aren't."""
+
+    def test_generic_section_titles_are_junk(self):
+        from worldview_api.ingest.gdelt_gkg import _is_junk_title
+
+        for t in ("World", "world", "Top Stories", "Breaking News", "OPINION", "Middle East"):
+            self.assertTrue(_is_junk_title(t, "arabnews.com"), t)
+
+    def test_real_headlines_are_not_junk(self):
+        from worldview_api.ingest.gdelt_gkg import _is_junk_title
+
+        for t in (
+            "World leaders meet in Geneva over ceasefire proposal",
+            "US and Iran launch airstrikes after escalation",
+            "World Cup draw announced",
+        ):
+            self.assertFalse(_is_junk_title(t, "arabnews.com"), t)
+
+    def test_brand_only_title_still_caught(self):
+        from worldview_api.ingest.gdelt_gkg import _is_junk_title
+
+        self.assertTrue(_is_junk_title("Deadline", "deadline.com"))
+
+
+class CleanLocShortTests(unittest.TestCase):
+    def test_two_letter_codes_dropped(self):
+        from worldview_api.ingest.gdelt_gkg import _clean_loc_short
+
+        self.assertIsNone(_clean_loc_short("SF", "state"))
+        self.assertEqual(_clean_loc_short("Johannesburg, Gauteng, South Africa", "city"), "Johannesburg")

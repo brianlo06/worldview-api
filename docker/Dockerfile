@@ -13,22 +13,26 @@ WORKDIR /app
 
 # build-essential + libpq-dev are needed for psycopg's C extension build,
 # even with the binary wheel (some pgvector adapter paths use libpq headers).
+# fonts-dejavu-core supplies the TrueType faces the share-card renderer
+# (share/card.py) draws with — without them Pillow falls back to a bitmap
+# default and cards look broken.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential libpq-dev \
+ && apt-get install -y --no-install-recommends build-essential libpq-dev fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
 
-# pyproject lists the core deps. fastembed / openai / numpy / pgvector
-# are imported by the runtime code but not yet declared as project deps —
+# pyproject lists the core deps. fastembed / openai / numpy / pgvector are
+# imported by the ingest/search code, and pillow by the share-card renderer —
 # install them explicitly so the image is self-contained.
 RUN pip install -e . \
         fastembed \
         openai \
         numpy \
-        pgvector
+        pgvector \
+        pillow
 
 # Pre-download the bge-small embedding model so a cold container's first
 # /search isn't a multi-second blocking download. Adds ~80 MB to the image

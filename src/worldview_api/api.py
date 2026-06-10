@@ -12,6 +12,7 @@ from uuid import UUID
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -722,6 +723,151 @@ def cluster_detail(cluster_id: UUID) -> ClusterDetailOut:
     )
 
 
+class BriefingStoryOut(BaseModel):
+    """One briefing story: its spoken narration plus the fields the client
+    needs to fly the globe and render the selection card without a second
+    round-trip to /clusters."""
+    cluster_id: UUID
+    narration: str
+    title: str
+    summary: str | None = None
+    url: str | None = None
+    image_url: str | None = None
+    source_outlet: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    country_code: str | None = None
+    city: str | None = None
+    category: str | None = None
+    occurred_at: datetime | None = None
+
+
+class BriefingResponse(BaseModel):
+    intro: str
+    stories: list[BriefingStoryOut]
+    outro: str
+    # "llm" when the narration was synthesized, "fallback" for the cleaned-up
+    # no-LLM path (LLM disabled / over budget / failed).
+    source: str = "fallback"
+
+
+@app.post("/briefing", response_model=BriefingResponse)
+def briefing(response: Response) -> BriefingResponse:
+    """Top-stories briefing as a short, conversational spoken-word script.
+
+    Selects the top N clusters (last 24h, >=2 events, by importance — the same
+    selection the client used to do) and rewrites them into natural narration
+    via the LLM, degrading to cleaned-up cluster text on any LLM/budget/timeout
+    condition. Never 5xx for LLM reasons; an empty selection skips the LLM."""
+    from .briefing.narrate import BriefingInput, generate_briefing
+
+    response.headers["Cache-Control"] = "no-store"
+    n = settings.briefing_story_count
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    pool = get_pool()
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id,
+                   e.title,
+                   e.summary,
+                   e.url,
+                   e.image_url,
+                   e.source_outlet,
+                   c.last_seen,
+                   ST_Y(e.location::geometry) AS lat,
+                   ST_X(e.location::geometry) AS lon,
+                   e.country_code,
+                   e.city,
+                   c.primary_category
+            FROM clusters c
+            LEFT JOIN LATERAL (
+                SELECT *
+                FROM events e2
+                WHERE e2.cluster_id = c.id
+                  AND e2.embedding IS NOT NULL
+                  AND e2.location IS NOT NULL
+                ORDER BY
+                    CASE e2.geo_precision
+                        WHEN 'point'   THEN 0
+                        WHEN 'city'    THEN 1
+                        WHEN 'state'   THEN 2
+                        WHEN 'country' THEN 3
+                        ELSE 4
+                    END ASC,
+                    (e2.image_url IS NOT NULL) DESC,
+                    e2.embedding <=> c.centroid_embedding ASC
+                LIMIT 1
+            ) e ON true
+            WHERE c.last_seen >= %s
+              AND c.event_count >= 2
+              AND e.id IS NOT NULL
+            ORDER BY coalesce(c.importance_score, 0) DESC,
+                     c.event_count DESC,
+                     c.last_seen DESC
+            LIMIT %s
+            """,
+            (since, n),
+        )
+        rows = cur.fetchall()
+
+    selected = [
+        {
+            "id": r[0],
+            "title": r[1],
+            "summary": r[2],
+            "url": r[3],
+            "image_url": r[4],
+            "source_outlet": r[5],
+            "occurred_at": r[6],
+            "lat": r[7],
+            "lon": r[8],
+            "country_code": r[9],
+            "city": r[10],
+            "category": r[11],
+        }
+        for r in rows
+    ]
+
+    if not selected:
+        return BriefingResponse(intro="", stories=[], outro="", source="fallback")
+
+    inputs: list[BriefingInput] = [
+        {
+            "cluster_id": str(s["id"]),
+            "title": s["title"],
+            "summary": s["summary"],
+            "city": s["city"],
+            "country_code": s["country_code"],
+        }
+        for s in selected
+    ]
+    script, source = generate_briefing(inputs)
+    narration_by_id = {st["cluster_id"]: st["narration"] for st in script["stories"]}
+
+    stories_out = [
+        BriefingStoryOut(
+            cluster_id=s["id"],
+            narration=narration_by_id.get(str(s["id"]), ""),
+            title=s["title"],
+            summary=s["summary"],
+            url=s["url"],
+            image_url=s["image_url"],
+            source_outlet=s["source_outlet"],
+            lat=s["lat"],
+            lon=s["lon"],
+            country_code=s["country_code"],
+            city=s["city"],
+            category=s["category"],
+            occurred_at=s["occurred_at"],
+        )
+        for s in selected
+    ]
+    return BriefingResponse(
+        intro=script["intro"], stories=stories_out, outro=script["outro"], source=source
+    )
+
+
 @app.get("/markets", response_model=list[MarketOut])
 def markets() -> list[MarketOut]:
     pool = get_pool()
@@ -780,6 +926,138 @@ def events_recent(
         )
         rows = cur.fetchall()
     return [_row_to_event(r) for r in rows]
+
+
+class AskRequest(BaseModel):
+    question: str = Field("", max_length=500)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lon: float | None = Field(None, ge=-180, le=180)
+
+
+class AskResultItem(BaseModel):
+    id: str | None = None
+    title: str
+    summary: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    place: str | None = None
+    source_outlet: str | None = None
+    image_url: str | None = None
+    country_code: str | None = None
+    city: str | None = None
+
+
+class AskResponse(BaseModel):
+    answer: str
+    place: str | None = None
+    fly_lat: float | None = None
+    fly_lon: float | None = None
+    cluster_refs: list[str] = []
+    results: list[AskResultItem] = []
+    stats: dict = {}
+    source: str = "live"
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask(body: AskRequest, response: Response) -> AskResponse:
+    """Natural-language 'ask the globe'. Reuses semantic search over clusters,
+    synthesizes a short in-character answer (budget-gated), and degrades to a
+    templated answer from the top cluster's summary when the LLM is unavailable
+    — never 5xx for LLM/budget reasons.
+    """
+    from .ask.answer import answer_question
+
+    q = (body.question or "").strip()
+    if not q and (body.lat is None or body.lon is None):
+        raise HTTPException(status_code=422, detail="question or coordinates required")
+
+    result = answer_question(q, body.lat, body.lon)
+    # Cache hits / pre-baked answers are stable for longer; freshly computed
+    # ones track the ~15-min ingest cycle.
+    max_age = 300 if result.source in ("cache", "prebaked") else 120
+    response.headers["Cache-Control"] = f"public, max-age={max_age}"
+    return AskResponse(
+        answer=result.answer,
+        place=result.place,
+        fly_lat=result.fly_lat,
+        fly_lon=result.fly_lon,
+        cluster_refs=result.cluster_refs,
+        results=[AskResultItem(**r) for r in result.results],
+        stats=result.stats,
+        source=result.source,
+    )
+
+
+class ShareRequest(BaseModel):
+    kind: str = Field("view", max_length=20)
+    params: dict = {}
+    title: str | None = Field(None, max_length=400)
+    place: str | None = Field(None, max_length=200)
+    question: str | None = Field(None, max_length=500)
+    answer: str | None = Field(None, max_length=800)
+    fly_lat: float | None = Field(None, ge=-90, le=90)
+    fly_lon: float | None = Field(None, ge=-180, le=180)
+    stats: dict = {}
+
+
+class ShareResponse(BaseModel):
+    id: str
+    url: str
+
+
+@app.post("/share", response_model=ShareResponse)
+def create_share_endpoint(body: ShareRequest) -> ShareResponse:
+    """Snapshot the current view/answer and return a short shareable id. The
+    card fields are denormalized so the share stays valid after its source
+    cluster ages out."""
+    from .share.store import create_share
+
+    share_id = create_share(
+        kind=body.kind,
+        params=body.params,
+        title=body.title,
+        place=body.place,
+        question=body.question,
+        answer=body.answer,
+        fly_lat=body.fly_lat,
+        fly_lon=body.fly_lon,
+        stats=body.stats,
+    )
+    url = f"{settings.share_public_base.rstrip('/')}/s/{share_id}"
+    return ShareResponse(id=share_id, url=url)
+
+
+@app.get("/s/{share_id}", response_class=HTMLResponse)
+def share_page(share_id: str) -> Response:
+    """Per-share HTML with OpenGraph/Twitter meta for crawlers; redirects human
+    browsers into the SPA deep link."""
+    from .share.html import render_share_html
+    from .share.store import get_share
+
+    share = get_share(share_id)
+    if share is None:
+        # Unknown/stale id: send humans to the default globe rather than 404.
+        return RedirectResponse(url=settings.share_redirect_base.rstrip("/") + "/", status_code=302)
+    html_doc = render_share_html(share)
+    # Short cache: the card/meta are stable, but allow correction if regenerated.
+    return HTMLResponse(content=html_doc, headers={"Cache-Control": "public, max-age=600"})
+
+
+@app.get("/s/{share_id}/card.png")
+def share_card(share_id: str) -> Response:
+    """Immutable 1200x630 preview card. Rendered once, cached on disk."""
+    from .share.card import get_or_render_card_path
+    from .share.store import get_share
+
+    share = get_share(share_id)
+    if share is None:
+        raise HTTPException(status_code=404, detail="share not found")
+    path = get_or_render_card_path(share)
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/events", response_model=list[EventOut])

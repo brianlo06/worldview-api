@@ -37,6 +37,52 @@ class Settings(BaseSettings):
     # (defensive default — never enable in prod without setting the secret).
     ingest_token: str = ""
 
+    # --- Interactive "ask the globe" (POST /ask) ------------------------------
+    # Budget for interactive LLM synthesis, tracked SEPARATELY from the
+    # summarizer so an /ask traffic spike can't starve ingest-time
+    # summarization (and vice-versa). When the daily cap or RPM pace is hit,
+    # /ask transparently serves the degraded (templated, no-LLM) answer.
+    # Sized small on purpose: free-tier, degrade-hard strategy.
+    ask_llm_daily_cap: int = 200          # interactive synth calls/day before degrading
+    ask_llm_max_rpm: int = 6              # interactive synth pace (req/min)
+    ask_llm_timeout_s: float = 6.0       # per-call wall-clock budget before degrading
+    # How long a cached /ask answer is considered fresh. Aligned to the ~15-min
+    # ingest cycle so answers track the data without re-spending the LLM.
+    ask_cache_ttl_seconds: int = 900
+    # Coordinate bucketing for "near me" answers: round lat/lon to this many
+    # decimals so nearby users share a cache entry (~0.5° ≈ city granularity).
+    ask_geo_bucket_decimals: int = 1
+    # Retrieval window + breadth for ask cluster search.
+    ask_search_hours: int = 48
+    ask_search_limit: int = 8
+    ask_min_similarity: float = 0.42
+
+    # --- Top-stories briefing (POST /briefing) --------------------------------
+    # Budget for the briefing narration LLM call, tracked SEPARATELY from /ask
+    # and the summarizer (per the budget-isolation invariant) so a briefing
+    # burst can't starve interactive answers or ingest-time summarization.
+    # One briefing = one LLM call (the whole script in a single request), and
+    # briefings are user-triggered + low-volume, so the cap is modest. When the
+    # cap/pace/timeout is hit the endpoint serves a cleaned-up, no-LLM fallback.
+    briefing_llm_daily_cap: int = 100     # briefing synth calls/day before degrading
+    briefing_llm_max_rpm: int = 6         # briefing synth pace (req/min)
+    briefing_llm_timeout_s: float = 8.0   # per-call wall-clock budget (5-story call is heavier than /ask)
+    # How many top stories a briefing covers.
+    briefing_story_count: int = 5
+    # Model for briefing narration. Provider free tiers cap requests PER MODEL
+    # per day, so pointing the briefing at a DIFFERENT model than the summarizer
+    # (LLM_MODEL) gives it its own daily bucket — the summarizer's churn can't
+    # starve the rare, user-triggered briefing. Empty = inherit LLM_MODEL.
+    briefing_llm_model: str = ""
+
+    # --- Share cards (/share, /s/<id>) ----------------------------------------
+    # Where rendered 1200x630 PNG cards are cached on disk (immutable per id).
+    share_card_dir: str = "/tmp/worldview-share-cards"
+    # Public base URL the share HTML redirects humans into (the SPA apex).
+    share_redirect_base: str = "https://jarvisworlds.com"
+    # Absolute base for og:image / share links (apex; Caddy routes /s/* to API).
+    share_public_base: str = "https://jarvisworlds.com"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

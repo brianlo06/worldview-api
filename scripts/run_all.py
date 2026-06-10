@@ -22,6 +22,7 @@ import traceback
 
 from worldview_api.config import settings
 from worldview_api.analyze import anomalies as anomalies_mod
+from worldview_api.ask import prebake as ask_prebake
 from worldview_api.cluster import assign as cluster_assign
 from worldview_api.cluster import summarize as cluster_summarize
 from worldview_api.embed import embed as embed_mod
@@ -48,6 +49,10 @@ def main() -> None:
         ("Clustering",   lambda: cluster_assign.cluster_assign_once()),
         ("Summarization",lambda: cluster_summarize.summarize_pending(limit=settings.summarizer_batch_size)),
         ("Anomalies",    lambda: anomalies_mod.run_anomalies_once()),
+        # Refresh pre-baked answers for popular /ask questions so interactive
+        # traffic hits a warm cache instead of the free-tier LLM. Runs last so
+        # it reflects the freshest clusters/summaries from this cycle.
+        ("Ask prebake",  lambda: ask_prebake.prebake_once()),
         # Retention is enforced in the database by a pg_cron job
         # (sql/008_pg_cron.sql), not here — the ingest loop no longer prunes.
     ]

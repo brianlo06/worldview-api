@@ -21,9 +21,20 @@
 # client-side routes resolve without a 404 (SPA routing).
 {$DOMAIN}, www.{$DOMAIN} {
     encode zstd gzip
-    root * /srv/frontend
-    try_files {path} /index.html
-    file_server
+
+    # Share links unfurl from the API: the static SPA can't emit per-share
+    # OpenGraph meta or render the preview PNG (crawlers don't run JS). Route
+    # /s/* (and /s/<id>/card.png) to FastAPI; everything else is the SPA. The
+    # `/s/` prefix is reserved — the SPA must not use it as a client route.
+    handle /s/* {
+        reverse_proxy api:8088
+    }
+
+    handle {
+        root * /srv/frontend
+        try_files {path} /index.html
+        file_server
+    }
 }
 
 # --- API: reverse-proxy to the FastAPI service -----------------------------

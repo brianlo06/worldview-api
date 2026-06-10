@@ -22,14 +22,40 @@ router = APIRouter()
 _LAST_LLM_TTL_S = 20 * 60
 _last_llm_briefing: tuple[float, BriefingResponse] | None = None
 
+# Diversity cap, mirroring the frontend breaking list (hud/breaking.ts): NWS
+# alert clusters dominate raw importance/event_count, so an uncapped top-5 is
+# four thunderstorms and a flood. A briefing should cover the world, not one
+# storm system. Backfilled from the overflow when there aren't enough
+# distinct-category stories.
+_MAX_STORIES_PER_CATEGORY = 2
+
+
+def _diversify(rows: list[dict], n: int) -> list[dict]:
+    picked: list[dict] = []
+    overflow: list[dict] = []
+    per_category: dict[str, int] = {}
+    for s in rows:
+        cat = s["category"] or "uncategorized"
+        if per_category.get(cat, 0) >= _MAX_STORIES_PER_CATEGORY:
+            overflow.append(s)
+            continue
+        per_category[cat] = per_category.get(cat, 0) + 1
+        picked.append(s)
+        if len(picked) >= n:
+            return picked
+    # Quiet news window: not enough category variety — fill from overflow so
+    # the briefing still reaches its story count.
+    picked.extend(overflow[: n - len(picked)])
+    return picked
+
 
 @router.post("/briefing", response_model=BriefingResponse)
 def briefing(response: Response) -> BriefingResponse:
     """Top-stories briefing as a short, conversational spoken-word script.
 
-    Selects the top N clusters (last 24h, >=2 events, by importance — the same
-    selection the client used to do) and rewrites them into natural narration
-    via the LLM, degrading to cleaned-up cluster text on any LLM/budget/timeout
+    Selects the top N clusters (last 24h, >=2 events, by importance, capped
+    per category for variety) and rewrites them into natural narration via the
+    LLM, degrading to cleaned-up cluster text on any LLM/budget/timeout
     condition. Never 5xx for LLM reasons; an empty selection skips the LLM."""
     from ..briefing.narrate import BriefingInput, generate_briefing
 
@@ -62,11 +88,13 @@ def briefing(response: Response) -> BriefingResponse:
                      c.last_seen DESC
             LIMIT %s
             """,
-            (since, n),
+            # Over-fetch so the per-category cap still has enough candidates
+            # to fill the briefing with diverse stories.
+            (since, max(n * 6, 30)),
         )
         rows = cur.fetchall()
 
-    selected = [
+    candidates = [
         {
             "id": r[0],
             "title": r[1],
@@ -83,6 +111,7 @@ def briefing(response: Response) -> BriefingResponse:
         }
         for r in rows
     ]
+    selected = _diversify(candidates, n)
 
     if not selected:
         return BriefingResponse(intro="", stories=[], outro="", source="fallback")

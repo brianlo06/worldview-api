@@ -195,3 +195,39 @@ class ParseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiversifyTests(unittest.TestCase):
+    """Per-category cap on the briefing's story selection (routers.briefing)."""
+
+    def test_caps_dominant_category_and_keeps_order(self):
+        from worldview_api.routers.briefing import _diversify
+
+        rows = [
+            {"category": "weather", "id": 1},
+            {"category": "weather", "id": 2},
+            {"category": "weather", "id": 3},
+            {"category": "weather", "id": 4},
+            {"category": "conflict", "id": 5},
+            {"category": "politics", "id": 6},
+        ]
+        picked = _diversify(rows, 5)
+        cats = [r["category"] for r in picked]
+        # 2 weather (cap), then conflict + politics, then 1 weather backfill
+        self.assertEqual(cats[:4], ["weather", "weather", "conflict", "politics"])
+        self.assertEqual(len(picked), 5)
+        self.assertEqual(cats.count("weather"), 3)
+
+    def test_single_category_still_fills_the_briefing(self):
+        from worldview_api.routers.briefing import _diversify
+
+        rows = [{"category": "weather", "id": i} for i in range(8)]
+        picked = _diversify(rows, 5)
+        self.assertEqual(len(picked), 5)
+
+    def test_none_category_grouped_as_uncategorized(self):
+        from worldview_api.routers.briefing import _diversify
+
+        rows = [{"category": None, "id": i} for i in range(4)]
+        picked = _diversify(rows, 3)
+        self.assertEqual(len(picked), 3)

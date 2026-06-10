@@ -157,16 +157,33 @@ def clusters(
 
 @router.get("/clusters/{cluster_id}", response_model=ClusterDetailOut)
 def cluster_detail(cluster_id: UUID) -> ClusterDetailOut:
+    """Single cluster, surfaced like the list endpoint: representative-event
+    fields (headline, article url, image, outlet, precise location) with the
+    cluster's own values as fallback — so detail fetches (anomaly driver
+    clicks, ask results, ?cluster= deep links) carry the article link."""
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, title, summary, first_seen, last_seen, event_count,
-                   ST_Y(centroid_location::geometry) AS lat,
-                   ST_X(centroid_location::geometry) AS lon,
-                   primary_country, primary_category, importance_score
-            FROM clusters
-            WHERE id = %s
+            SELECT c.id,
+                   coalesce(e.title, c.title),
+                   coalesce(e.summary, c.summary),
+                   e.url,
+                   e.image_url,
+                   e.source_outlet,
+                   c.first_seen, c.last_seen, c.event_count,
+                   coalesce(ST_Y(e.location::geometry),
+                            ST_Y(c.centroid_location::geometry)) AS lat,
+                   coalesce(ST_X(e.location::geometry),
+                            ST_X(c.centroid_location::geometry)) AS lon,
+                   coalesce(e.country_code, c.primary_country),
+                   e.city,
+                   c.primary_category,
+                   c.importance_score,
+                   e.geo_precision
+            FROM clusters c
+            LEFT JOIN events e ON e.id = c.representative_event_id
+            WHERE c.id = %s
             """,
             (cluster_id,),
         )
@@ -188,21 +205,26 @@ def cluster_detail(cluster_id: UUID) -> ClusterDetailOut:
         )
         members = cur.fetchall()
 
-    importance = c[10]
-    breaking = is_breaking(c[5], importance)
+    importance = c[14]
+    breaking = is_breaking(c[8], importance)
     return ClusterDetailOut(
         id=c[0],
         title=c[1],
         summary=c[2],
-        first_seen=c[3],
-        last_seen=c[4],
-        event_count=c[5],
-        lat=c[6],
-        lon=c[7],
-        country_code=c[8],
-        category=c[9],
+        url=c[3],
+        image_url=c[4],
+        source_outlet=c[5],
+        first_seen=c[6],
+        last_seen=c[7],
+        event_count=c[8],
+        lat=c[9],
+        lon=c[10],
+        country_code=c[11],
+        city=c[12],
+        category=c[13],
         importance=importance,
         breaking=breaking,
+        geo_precision=c[15],
         members=[
             ClusterMemberOut(
                 id=m[0],

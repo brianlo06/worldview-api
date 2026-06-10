@@ -135,7 +135,7 @@ class RunIngestSubprocessIntegrationTests(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_successful_run_inserts_and_updates_row(self):
-        from worldview_api import api as api_module
+        from worldview_api.ingest import orchestrator as api_module
         fake_completed = mock.Mock()
         fake_completed.returncode = 0
         fake_completed.stdout = "all good\n=== GDELT events ===\n"
@@ -168,7 +168,7 @@ class RunIngestSubprocessIntegrationTests(unittest.TestCase):
         self.assertIn("=== GDELT events ===", content)
 
     def test_timeout_records_sentinel_returncode(self):
-        from worldview_api import api as api_module
+        from worldview_api.ingest import orchestrator as api_module
         import subprocess
         inserted_ids: list[int] = []
         updated: list[tuple] = []

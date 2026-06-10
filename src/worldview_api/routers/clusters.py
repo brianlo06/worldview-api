@@ -38,10 +38,12 @@ def _query_clusters(
 ) -> list[ClusterOut]:
     """Active clusters surfaced as their representative event.
 
-    For each cluster, pick the member that (a) has an image, and (b) is
-    closest to the centroid embedding. The frontend renders that event's
-    headline/image/URL, plus an `event_count` indicator showing how many
-    other sources are behind the same story.
+    The representative (most precise location, then has-image, then closest
+    to the centroid embedding) is denormalized onto the cluster row by the
+    ingest cycle — see cluster/representative.py — so this is a plain PK
+    join. The frontend renders that event's headline/image/URL, plus an
+    `event_count` indicator showing how many other sources are behind the
+    same story.
     """
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     tier_sql, tier_params = tier_where_clause(tier)
@@ -67,29 +69,9 @@ def _query_clusters(
                    c.importance_score,
                    e.geo_precision
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT *
-                FROM events e2
-                WHERE e2.cluster_id = c.id
-                  AND e2.embedding IS NOT NULL
-                ORDER BY
-                    -- Prefer the member with the most precise location so the
-                    -- cluster dot doesn't sit on a country centroid when a
-                    -- sibling row knows the actual city.
-                    CASE e2.geo_precision
-                        WHEN 'point'   THEN 0
-                        WHEN 'city'    THEN 1
-                        WHEN 'state'   THEN 2
-                        WHEN 'country' THEN 3
-                        ELSE 4
-                    END ASC,
-                    (e2.image_url IS NOT NULL) DESC,
-                    e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen >= %s
               AND c.event_count >= %s
-              AND e.id IS NOT NULL
               {tier_clause}
             ORDER BY coalesce(c.importance_score, 0) DESC,
                      c.event_count DESC,

@@ -52,28 +52,8 @@ def search(body: SearchRequest) -> list[SearchResultOut]:
                    1 - (c.centroid_embedding <=> %s) AS similarity,
                    e.geo_precision
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT *
-                FROM events e2
-                WHERE e2.cluster_id = c.id
-                  AND e2.embedding IS NOT NULL
-                ORDER BY
-                    -- Prefer the member with the most precise location so the
-                    -- cluster dot doesn't sit on a country centroid when a
-                    -- sibling row knows the actual city.
-                    CASE e2.geo_precision
-                        WHEN 'point'   THEN 0
-                        WHEN 'city'    THEN 1
-                        WHEN 'state'   THEN 2
-                        WHEN 'country' THEN 3
-                        ELSE 4
-                    END ASC,
-                    (e2.image_url IS NOT NULL) DESC,
-                    e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
-              AND e.id IS NOT NULL
             ORDER BY c.centroid_embedding <=> %s
             LIMIT %s
             """,

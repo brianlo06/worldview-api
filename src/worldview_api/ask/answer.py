@@ -223,20 +223,8 @@ def retrieve_clusters(query: str) -> list[Story]:
                    e.image_url, e.source_outlet,
                    1 - (c.centroid_embedding <=> %s) AS similarity
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT *
-                FROM events e2
-                WHERE e2.cluster_id = c.id AND e2.embedding IS NOT NULL
-                ORDER BY
-                    CASE e2.geo_precision
-                        WHEN 'point' THEN 0 WHEN 'city' THEN 1
-                        WHEN 'state' THEN 2 WHEN 'country' THEN 3 ELSE 4 END ASC,
-                    (e2.image_url IS NOT NULL) DESC,
-                    e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
-              AND e.id IS NOT NULL
             ORDER BY c.centroid_embedding <=> %s
             LIMIT %s
             """,
@@ -272,15 +260,9 @@ def retrieve_top_clusters(limit: int) -> list[Story]:
                    e.country_code, e.city, c.event_count, c.importance_score,
                    e.image_url, e.source_outlet
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT * FROM events e2
-                WHERE e2.cluster_id = c.id AND e2.embedding IS NOT NULL
-                ORDER BY (e2.image_url IS NOT NULL) DESC,
-                         e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
-              AND e.id IS NOT NULL AND c.event_count >= 2
+              AND c.event_count >= 2
             ORDER BY COALESCE(c.importance_score, 0) DESC, c.event_count DESC
             LIMIT %s
             """,
@@ -310,15 +292,9 @@ def retrieve_top_by_country(country_code: str, limit: int = 8) -> list[Story]:
                    e.country_code, e.city, c.event_count, c.importance_score,
                    e.image_url, e.source_outlet
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT * FROM events e2
-                WHERE e2.cluster_id = c.id AND e2.embedding IS NOT NULL
-                ORDER BY (e2.image_url IS NOT NULL) DESC,
-                         e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
-              AND e.id IS NOT NULL AND c.primary_country = %s
+              AND c.primary_country = %s
             ORDER BY COALESCE(c.importance_score, 0) DESC, c.event_count DESC
             LIMIT %s
             """,

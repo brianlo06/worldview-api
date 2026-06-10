@@ -43,27 +43,10 @@ def briefing(response: Response) -> BriefingResponse:
                    e.city,
                    c.primary_category
             FROM clusters c
-            LEFT JOIN LATERAL (
-                SELECT *
-                FROM events e2
-                WHERE e2.cluster_id = c.id
-                  AND e2.embedding IS NOT NULL
-                  AND e2.location IS NOT NULL
-                ORDER BY
-                    CASE e2.geo_precision
-                        WHEN 'point'   THEN 0
-                        WHEN 'city'    THEN 1
-                        WHEN 'state'   THEN 2
-                        WHEN 'country' THEN 3
-                        ELSE 4
-                    END ASC,
-                    (e2.image_url IS NOT NULL) DESC,
-                    e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
-            ) e ON true
+            JOIN events e ON e.id = c.representative_event_id
             WHERE c.last_seen >= %s
               AND c.event_count >= 2
-              AND e.id IS NOT NULL
+              AND e.location IS NOT NULL
             ORDER BY coalesce(c.importance_score, 0) DESC,
                      c.event_count DESC,
                      c.last_seen DESC

@@ -24,6 +24,7 @@ from worldview_api.config import settings
 from worldview_api.analyze import anomalies as anomalies_mod
 from worldview_api.ask import prebake as ask_prebake
 from worldview_api.cluster import assign as cluster_assign
+from worldview_api.cluster import representative as cluster_representative
 from worldview_api.cluster import summarize as cluster_summarize
 from worldview_api.embed import embed as embed_mod
 from worldview_api.ingest import currencies, enrich, gdelt, gdelt_gkg, markets, weather
@@ -47,6 +48,10 @@ def main() -> None:
         ("Currencies",   lambda: currencies.ingest_currencies_once()),
         ("Embedding",    lambda: embed_mod.embed_batch_once()),
         ("Clustering",   lambda: cluster_assign.cluster_assign_once()),
+        # Re-pick each active cluster's representative member after centroids
+        # moved / members joined; the API reads this denormalized id instead
+        # of running the expensive per-cluster pick on every request.
+        ("Representatives", lambda: cluster_representative.refresh_representatives()),
         ("Summarization",lambda: cluster_summarize.summarize_pending(limit=settings.summarizer_batch_size)),
         ("Anomalies",    lambda: anomalies_mod.run_anomalies_once()),
         # Refresh pre-baked answers for popular /ask questions so interactive

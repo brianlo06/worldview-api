@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
@@ -12,20 +15,27 @@ from ..db import get_pool
 from ..schemas import ClusterDetailOut, ClusterMemberOut, ClusterOut
 from ..scoring import is_breaking, tier_where_clause
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
+# Stale-while-revalidate cache for the cluster list. The representative-member
+# query randomly reads embedding vectors for every active cluster and takes
+# 10-20s on the prod box at current data volume, while every frontend boot and
+# refresh tick asks for the identical default URL. Entries are fresh for
+# _CLUSTERS_TTL_S; a stale entry is returned immediately and a single
+# background thread recomputes it. Only the first request after a process
+# start ever waits on the query.
+_CLUSTERS_TTL_S = 30.0
+_clusters_cache: dict[tuple, tuple[float, list[ClusterOut]]] = {}
+_clusters_cache_lock = threading.Lock()
+_clusters_refreshing: set[tuple] = set()
 
-@router.get("/clusters", response_model=list[ClusterOut])
-def clusters(
-    response: Response,
-    hours: int = Query(48, ge=1, le=720),
-    min_events: int = Query(1, ge=1, le=100),
-    limit: int = Query(500, ge=1, le=5000),
-    tier: Literal["all", "notable", "major", "top"] = Query("all"),
+
+def _query_clusters(
+    hours: int, min_events: int, limit: int,
+    tier: Literal["all", "notable", "major", "top"],
 ) -> list[ClusterOut]:
-    # Ingest runs every 15 min; 30s CDN cache lets a public deploy survive
-    # bursts without each visit hammering Postgres.
-    response.headers["Cache-Control"] = "public, max-age=30"
     """Active clusters surfaced as their representative event.
 
     For each cluster, pick the member that (a) has an image, and (b) is
@@ -117,6 +127,50 @@ def clusters(
             )
         )
     return out
+
+
+def _refresh_clusters_cache(key: tuple) -> None:
+    try:
+        result = _query_clusters(*key)
+        with _clusters_cache_lock:
+            _clusters_cache[key] = (time.monotonic(), result)
+    except Exception:
+        log.exception("background /clusters refresh failed for %s", key)
+    finally:
+        with _clusters_cache_lock:
+            _clusters_refreshing.discard(key)
+
+
+@router.get("/clusters", response_model=list[ClusterOut])
+def clusters(
+    response: Response,
+    hours: int = Query(48, ge=1, le=720),
+    min_events: int = Query(1, ge=1, le=100),
+    limit: int = Query(500, ge=1, le=5000),
+    tier: Literal["all", "notable", "major", "top"] = Query("all"),
+) -> list[ClusterOut]:
+    # Ingest runs every 15 min; 30s CDN cache lets a public deploy survive
+    # bursts without each visit hammering Postgres.
+    response.headers["Cache-Control"] = "public, max-age=30"
+    key = (hours, min_events, limit, tier)
+    now = time.monotonic()
+    with _clusters_cache_lock:
+        hit = _clusters_cache.get(key)
+        if hit is not None:
+            stale = now - hit[0] >= _CLUSTERS_TTL_S
+            if stale and key not in _clusters_refreshing:
+                _clusters_refreshing.add(key)
+                threading.Thread(
+                    target=_refresh_clusters_cache, args=(key,), daemon=True
+                ).start()
+            # Fresh or stale, serve immediately — staleness is bounded by the
+            # refresh just kicked off, and the data only changes every ~15 min.
+            return hit[1]
+    # First request for this key since process start: compute synchronously.
+    result = _query_clusters(hours, min_events, limit, tier)
+    with _clusters_cache_lock:
+        _clusters_cache[key] = (time.monotonic(), result)
+    return result
 
 
 @router.get("/clusters/{cluster_id}", response_model=ClusterDetailOut)

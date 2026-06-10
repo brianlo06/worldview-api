@@ -26,25 +26,51 @@ def refresh_representatives(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[st
     """Recompute representative_event_id for recently-active clusters."""
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
+        # Prefer members from the last 48h, falling back to any member.
+        # Long-lived clusters (e.g. NWS alert streams) keep absorbing fresh
+        # events while the centroid-nearest member can be days old — showing
+        # an expired "Severe Thunderstorm Warning issued June 7" headline on
+        # a story that is current. COALESCE evaluates the second pick only
+        # when no recent member exists.
         cur.execute(
             """
             UPDATE clusters c
-            SET representative_event_id = (
-                SELECT e2.id
-                FROM events e2
-                WHERE e2.cluster_id = c.id
-                  AND e2.embedding IS NOT NULL
-                ORDER BY
-                    CASE e2.geo_precision
-                        WHEN 'point'   THEN 0
-                        WHEN 'city'    THEN 1
-                        WHEN 'state'   THEN 2
-                        WHEN 'country' THEN 3
-                        ELSE 4
-                    END ASC,
-                    (e2.image_url IS NOT NULL) DESC,
-                    e2.embedding <=> c.centroid_embedding ASC
-                LIMIT 1
+            SET representative_event_id = COALESCE(
+                (
+                    SELECT e2.id
+                    FROM events e2
+                    WHERE e2.cluster_id = c.id
+                      AND e2.embedding IS NOT NULL
+                      AND e2.occurred_at > NOW() - INTERVAL '48 hours'
+                    ORDER BY
+                        CASE e2.geo_precision
+                            WHEN 'point'   THEN 0
+                            WHEN 'city'    THEN 1
+                            WHEN 'state'   THEN 2
+                            WHEN 'country' THEN 3
+                            ELSE 4
+                        END ASC,
+                        (e2.image_url IS NOT NULL) DESC,
+                        e2.embedding <=> c.centroid_embedding ASC
+                    LIMIT 1
+                ),
+                (
+                    SELECT e2.id
+                    FROM events e2
+                    WHERE e2.cluster_id = c.id
+                      AND e2.embedding IS NOT NULL
+                    ORDER BY
+                        CASE e2.geo_precision
+                            WHEN 'point'   THEN 0
+                            WHEN 'city'    THEN 1
+                            WHEN 'state'   THEN 2
+                            WHEN 'country' THEN 3
+                            ELSE 4
+                        END ASC,
+                        (e2.image_url IS NOT NULL) DESC,
+                        e2.embedding <=> c.centroid_embedding ASC
+                    LIMIT 1
+                )
             )
             WHERE c.last_seen > NOW() - (%s * INTERVAL '1 hour')
             """,

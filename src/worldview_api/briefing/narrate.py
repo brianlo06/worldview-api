@@ -63,6 +63,13 @@ _ELLIPSIS = re.compile(r"\s*(?:\.{2,}|…)+\s*")
 # Asterisk bullets the NWS uses to delimit fields.
 _BULLET = re.compile(r"\s*\*+\s*")
 _FIRST_SENTENCE = re.compile(r"^.{20,}?[.!?](?=\s|$)")
+# NWS alert-title tail: "... issued June 9 at 11:13PM CDT until ... by NWS
+# Topeka KS". Pure timestamp/office noise when spoken — dropped both for the
+# fallback narration and from the LLM's input so it can't echo the dates.
+_ISSUED_TAIL = re.compile(
+    r"\s+issued\s+\w+\s+\d{1,2}\s+at\s+\d{1,2}:\d{2}\s*[AP]M\b.*$",
+    re.IGNORECASE,
+)
 
 
 def clean_for_speech(text: str | None, max_chars: int = 220) -> str:
@@ -75,6 +82,7 @@ def clean_for_speech(text: str | None, max_chars: int = 220) -> str:
         return ""
     t = _WS.sub(" ", text).strip()
     t = _LEADING_CODE.sub("", t)
+    t = _ISSUED_TAIL.sub("", t)
     t = _ELLIPSIS.sub(", ", t)
     t = _BULLET.sub(" ", t)
     t = _WS.sub(" ", t).strip(" ,.")
@@ -119,35 +127,49 @@ def _parse_script(content: str) -> _BriefingScript | None:
     return None
 
 
-SYSTEM_PROMPT = """You are JARVIS, delivering a short spoken news briefing out \
-loud. You are given the top stories of the hour, each with an id, a location, a \
-headline, and a summary. Rewrite them as a script that will be read aloud by a \
+SYSTEM_PROMPT = """You are JARVIS — the composed, quietly capable AI aide — \
+delivering a spoken news briefing to the person you work for, the way you'd \
+catch Tony Stark up on the world while he's working. You are given the top \
+stories of the hour, each with an id, a location, a headline, and a summary. \
+Turn them into ONE flowing broadcast script to be read aloud by a \
 text-to-speech voice.
 
-Tone: natural and professional, like a calm news anchor catching someone up. \
-Conversational and fluent — never robotic. No opinion, no clickbait, no \
-adjectives like "shocking", "tragic", or "huge". Just tell people what is \
-happening, clearly.
+Voice and tone:
+- Conversational and assured — a trusted aide talking, never a robot reading \
+bullet points. Use contractions ("it's", "they're"). Short sentences, natural \
+spoken rhythm.
+- A light, dry touch is welcome ("a busy night across the Midwest"), but news \
+is news: nothing flippant about casualties or suffering, no editorializing, no \
+alarmist adjectives like "shocking" or "tragic".
+- NEVER read codes, identifiers, asterisks, or markup aloud (drop "SVRTOP", \
+"*", "..."). NEVER read clock times, dates, or timestamps literally ("12:37AM \
+CDT", "June 9", "Until 115 AM CDT") — say "tonight", "this evening", "through \
+the early morning", or leave the time out entirely.
+- Use ONLY facts present in the provided headline/summary. Do not invent \
+names, numbers, places, or outcomes.
 
-For each story, write ONE to TWO short sentences (about 10-15 seconds of speech):
-- Lead naturally with the place when it helps ("In southeastern Kansas, ...").
-- Say what is happening in plain spoken language.
-- NEVER read codes, identifiers, asterisks, or markup aloud (e.g. drop \
-"SVRTOP", "*", "..."). NEVER read exact clock times or timestamps literally \
-("12:37AM CDT", "Until 115 AM CDT") — say "tonight", "through early morning", \
-or omit them.
-- Use ONLY facts present in the provided headline/summary. Do not invent names, \
-numbers, places, or details.
+Make it FLOW as one continuous briefing, not disconnected items:
+- Each story should hand off naturally from the previous one. Vary your \
+openings and use spoken transitions: "Meanwhile, in...", "Across the \
+Atlantic...", "Closer to home...", "And finally...".
+- Rephrase headlines into something you would actually SAY. "Severe \
+Thunderstorm Warning issued June 9 at 11:13PM CDT by NWS Topeka" becomes "The \
+Weather Service has a severe thunderstorm warning out for central Kansas — \
+large hail and damaging winds expected through the evening."
+- TWO to THREE short sentences per story (roughly 10-18 seconds of speech).
 
 Also write:
-- intro: one short opening line, e.g. "Here are the top stories at this hour."
-- outro: one short closing line, e.g. "That's your briefing."
+- intro: one or two short lines that set the scene with a little personality, \
+e.g. "The world's been busy while you were away — here's what matters right \
+now."
+- outro: one short sign-off, e.g. "That's the picture for now. I'll keep an \
+eye on things."
 
 Output format — respond with ONLY a single JSON object and nothing else (no \
-markdown fences, no commentary). Include exactly one entry per story id you were \
-given, in the SAME order, reusing the given id verbatim:
-{"intro": "<opening line>", "stories": [{"cluster_id": "<id>", "narration": \
-"<1-2 sentence spoken narration>"}], "outro": "<closing line>"}
+markdown fences, no commentary). Include exactly one entry per story id you \
+were given, in the SAME order, reusing the given id verbatim:
+{"intro": "<opening>", "stories": [{"cluster_id": "<id>", "narration": \
+"<2-3 sentence spoken narration>"}], "outro": "<sign-off>"}
 """
 
 
@@ -178,9 +200,13 @@ def _fallback_narration(story: BriefingInput) -> str:
     title = clean_for_speech(story.get("title"), max_chars=160)
     body = clean_for_speech(story.get("summary"))
     parts: list[str] = []
-    if where:
+    # "In Topeka: ..." reads as one spoken phrase, where "In Topeka. ..."
+    # makes TTS deliver the place as its own clipped sentence.
+    if where and title:
+        parts.append(f"In {where}: {_ensure_period(title)}")
+    elif where:
         parts.append(f"In {where}.")
-    if title:
+    elif title:
         parts.append(_ensure_period(title))
     # Avoid repeating the headline when the summary just restates it.
     if body and body.lower() != title.lower():
@@ -190,11 +216,11 @@ def _fallback_narration(story: BriefingInput) -> str:
 
 def _default_intro(n: int) -> str:
     if n == 1:
-        return "Here is the top story at this hour."
-    return f"Here are the top {n} stories at this hour."
+        return "One story worth your attention right now."
+    return "The world's been busy — here's what's happening right now."
 
 
-_DEFAULT_OUTRO = "That's your briefing."
+_DEFAULT_OUTRO = "That's the picture for now. I'll keep watch."
 
 
 class BriefingScriptOut(TypedDict):
@@ -249,8 +275,12 @@ def _call_llm(stories: Sequence[BriefingInput]) -> str | None:
         kwargs: dict = dict(
             model=settings.briefing_llm_model or settings.llm_model,
             messages=messages,
-            temperature=0.4,
-            max_tokens=900,
+            # A little looser than the summarizer: narration should sound
+            # alive, and reconcile() backstops any structural drift.
+            temperature=0.6,
+            # 5 stories x 2-3 sentences + intro/outro needs more headroom
+            # than the old 1-2 sentence format.
+            max_tokens=1300,
             stream=False,
             timeout=settings.briefing_llm_timeout_s,
         )

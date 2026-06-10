@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Response
@@ -10,7 +12,15 @@ from ..config import settings
 from ..db import get_pool
 from ..schemas import BriefingResponse, BriefingStoryOut
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Last successful LLM-narrated briefing. When narration degrades (budget gate,
+# 429, timeout), replaying a recent JARVIS script beats the robotic template
+# fallback — the top stories barely move between 15-min ingest cycles.
+_LAST_LLM_TTL_S = 20 * 60
+_last_llm_briefing: tuple[float, BriefingResponse] | None = None
 
 
 @router.post("/briefing", response_model=BriefingResponse)
@@ -87,7 +97,13 @@ def briefing(response: Response) -> BriefingResponse:
         }
         for s in selected
     ]
+    global _last_llm_briefing
     script, source = generate_briefing(inputs)
+    if source == "fallback" and _last_llm_briefing is not None:
+        cached_at, cached = _last_llm_briefing
+        if time.monotonic() - cached_at < _LAST_LLM_TTL_S:
+            log.info("briefing: narration degraded — replaying cached LLM script")
+            return cached
     narration_by_id = {st["cluster_id"]: st["narration"] for st in script["stories"]}
 
     stories_out = [
@@ -108,6 +124,9 @@ def briefing(response: Response) -> BriefingResponse:
         )
         for s in selected
     ]
-    return BriefingResponse(
+    out = BriefingResponse(
         intro=script["intro"], stories=stories_out, outro=script["outro"], source=source
     )
+    if source == "llm":
+        _last_llm_briefing = (time.monotonic(), out)
+    return out

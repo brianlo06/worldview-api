@@ -82,6 +82,11 @@ services:
     image: worldview-api
     restart: unless-stopped
     env_file: .env
+    # Cap ingest to one of the box's two vCPUs. A run takes ~17 min of
+    # CPU-heavy embedding/parsing and was starving the api + db containers,
+    # pushing /clusters past the frontend's fetch timeout ("FEED OFFLINE").
+    # Ingest latency doesn't matter; API latency does.
+    cpus: 1.0
     depends_on:
       db:
         condition: service_healthy

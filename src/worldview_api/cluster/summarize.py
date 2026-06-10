@@ -256,7 +256,10 @@ def _summarize_one(
             response = _attempt()
         except openai.RateLimitError as e:
             # Shared 40-RPM account budget exceeded (often another project).
-            # Back off once — honor Retry-After if present — then retry.
+            # Back off once — honor Retry-After if present — then retry. A
+            # second consecutive 429 propagates to the caller: it usually
+            # means the provider's *daily* quota is gone, and grinding
+            # through the rest of the batch just burns CPU and minutes.
             backoff = _retry_after_seconds(e) or _RATE_LIMIT_BACKOFF_S
             log.info("cluster %s: 429 rate-limited, backing off %.1fs", cluster_id, backoff)
             time.sleep(backoff)
@@ -277,6 +280,8 @@ def _summarize_one(
                 getattr(usage, "completion_tokens", 0) or 0,
             )
         return summary
+    except openai.RateLimitError:
+        raise  # second 429 after backoff — let summarize_pending stop the batch
     except openai.APIStatusError as e:
         log.warning("cluster %s: LLM API %s: %s", cluster_id, e.status_code, e)
         return None
@@ -303,7 +308,24 @@ def summarize_pending(limit: int = 20, members_per_cluster: int = 5) -> dict[str
         members = _fetch_cluster_members(cluster_id, top_n=members_per_cluster)
         if not members:
             continue
-        summary = _summarize_one(client, str(cluster_id), members)
+        try:
+            summary = _summarize_one(client, str(cluster_id), members)
+        except openai.RateLimitError:
+            # Still 429 after the in-call backoff: the daily quota is almost
+            # certainly exhausted (e.g. Gemini free tier). Abandon the rest of
+            # the batch — each further attempt costs ~a minute of pacing and
+            # retries for a guaranteed failure. Clusters keep their headlines.
+            failed += 1
+            log.warning(
+                "rate-limited after backoff on %s — stopping batch (quota likely exhausted)",
+                cluster_id,
+            )
+            return {
+                "status": "rate_limited",
+                "attempted": len(pending),
+                "updated": updated,
+                "failed": failed,
+            }
         if summary is None:
             failed += 1
             continue

@@ -8,6 +8,12 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class AnomalyDriverStory(BaseModel):
+    """One cluster driving an anomaly — linkable from the anomaly card."""
+    cluster_id: UUID
+    title: str
+
+
 class AnomalyOut(BaseModel):
     id: UUID
     region_code: str
@@ -18,7 +24,9 @@ class AnomalyOut(BaseModel):
     sigma_above: float
     pulse_lat: float | None = None
     pulse_lon: float | None = None
-    driver_titles: list[str]
+    # One-line JARVIS read of the spike, generated at detection time.
+    synopsis: str | None = None
+    driver_stories: list[AnomalyDriverStory] = []
 
 
 class SearchRequest(BaseModel):

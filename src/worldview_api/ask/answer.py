@@ -18,7 +18,10 @@ from uuid import UUID
 from ..config import settings
 from ..db import get_pool
 from .budget import budget
-from .places import COUNTRY_ALIASES, country_name, detect_country
+# regions is FIPS-aware (event country codes are GDELT FIPS); places keeps the
+# question-text alias/intent maps.
+from ..regions import region_name as country_name
+from .places import COUNTRY_ALIASES, detect_country
 
 log = logging.getLogger(__name__)
 

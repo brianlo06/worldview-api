@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 
 from ..db import get_pool
+from .synopsis import generate_synopsis
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +114,8 @@ def detect_and_resolve() -> dict[str, int]:
                 """
                 SELECT c.id,
                        ST_Y(c.centroid_location::geometry) AS lat,
-                       ST_X(c.centroid_location::geometry) AS lon
+                       ST_X(c.centroid_location::geometry) AS lon,
+                       c.title
                 FROM clusters c
                 WHERE c.primary_country = %s
                   AND c.last_seen >= NOW() - INTERVAL '1 hour'
@@ -124,6 +126,8 @@ def detect_and_resolve() -> dict[str, int]:
             )
             drivers = cur.fetchall()
             driver_ids = [d[0] for d in drivers]
+            driver_titles = [d[3] for d in drivers if d[3]]
+            multiplier = float(current) / max(float(baseline), 0.1)
             pulse_lat = (
                 sum(d[1] for d in drivers if d[1] is not None) / len(drivers)
                 if drivers
@@ -138,7 +142,7 @@ def detect_and_resolve() -> dict[str, int]:
             # Touch existing active anomaly, or create a new one
             cur.execute(
                 """
-                SELECT id, peak_rate, sigma_above
+                SELECT id, peak_rate, sigma_above, driver_cluster_ids, synopsis
                 FROM anomalies
                 WHERE region_code = %s AND status = 'active'
                 LIMIT 1
@@ -147,7 +151,13 @@ def detect_and_resolve() -> dict[str, int]:
             )
             existing = cur.fetchone()
             if existing:
-                ex_id, ex_peak, ex_sigma = existing
+                ex_id, ex_peak, ex_sigma, ex_driver_ids, ex_synopsis = existing
+                # Regenerate the one-line read only when the story set behind
+                # the spike actually changed (or it never got one) — refreshes
+                # happen every cycle, the situation doesn't.
+                synopsis = ex_synopsis
+                if ex_synopsis is None or set(ex_driver_ids or []) != set(driver_ids):
+                    synopsis = generate_synopsis(region, multiplier, driver_titles)
                 cur.execute(
                     """
                     UPDATE anomalies
@@ -156,22 +166,25 @@ def detect_and_resolve() -> dict[str, int]:
                         driver_cluster_ids = %s,
                         pulse_lat          = %s,
                         pulse_lon          = %s,
+                        synopsis           = %s,
                         last_seen_at       = NOW()
                     WHERE id = %s
                     """,
-                    (current, sigma_above, driver_ids, pulse_lat, pulse_lon, ex_id),
+                    (current, sigma_above, driver_ids, pulse_lat, pulse_lon,
+                     synopsis, ex_id),
                 )
                 refreshed += 1
             else:
+                synopsis = generate_synopsis(region, multiplier, driver_titles)
                 cur.execute(
                     """
                     INSERT INTO anomalies (
                         region_code, peak_rate, baseline_rate, sigma_above,
-                        driver_cluster_ids, pulse_lat, pulse_lon
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        driver_cluster_ids, pulse_lat, pulse_lon, synopsis
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (region, current, baseline, sigma_above, driver_ids,
-                     pulse_lat, pulse_lon),
+                     pulse_lat, pulse_lon, synopsis),
                 )
                 triggered += 1
                 log.info(

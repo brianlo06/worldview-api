@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     briefing_llm_timeout_s: float = 8.0   # per-call wall-clock budget (5-story call is heavier than /ask)
     # How many top stories a briefing covers.
     briefing_story_count: int = 5
+
+    # --- Anomaly synopsis (background, generated at detection time) ----------
+    # One short LLM line per new/changed anomaly explaining the spike. Its own
+    # budget per the budget-isolation invariant; degrades to a template line.
+    anomaly_llm_daily_cap: int = 60
+    anomaly_llm_max_rpm: int = 6
+    anomaly_llm_timeout_s: float = 6.0
+    # Empty = inherit BRIEFING_LLM_MODEL (then LLM_MODEL) — the briefing's
+    # model is the one provisioned for short interactive rewrites.
+    anomaly_llm_model: str = ""
     # Model for briefing narration. Provider free tiers cap requests PER MODEL
     # per day, so pointing the briefing at a DIFFERENT model than the summarizer
     # (LLM_MODEL) gives it its own daily bucket — the summarizer's churn can't

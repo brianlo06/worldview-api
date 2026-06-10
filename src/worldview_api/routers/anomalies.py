@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from ..db import get_pool
-from ..schemas import AnomalyOut
+from ..schemas import AnomalyDriverStory, AnomalyOut
 
 router = APIRouter()
 
@@ -14,8 +14,9 @@ router = APIRouter()
 def anomalies() -> list[AnomalyOut]:
     """Active regions whose recent event rate has spiked past baseline+3σ.
 
-    Each anomaly carries up to 3 driver-cluster titles — the stories actually
-    driving the spike — so the frontend can show 'why' without an extra fetch.
+    Each anomaly carries its driver clusters (id + title, the stories actually
+    driving the spike) so the frontend can link straight to them, plus the
+    one-line synopsis generated at detection time.
     """
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
@@ -30,14 +31,18 @@ def anomalies() -> list[AnomalyOut]:
                    a.sigma_above,
                    a.pulse_lat,
                    a.pulse_lon,
+                   a.synopsis,
                    coalesce(
                      (
-                       SELECT array_agg(c.title ORDER BY c.event_count DESC)
+                       SELECT jsonb_agg(
+                                jsonb_build_object('cluster_id', c.id, 'title', c.title)
+                                ORDER BY c.event_count DESC
+                              )
                        FROM clusters c
                        WHERE c.id = ANY(a.driver_cluster_ids)
                      ),
-                     '{}'::text[]
-                   ) AS driver_titles
+                     '[]'::jsonb
+                   ) AS driver_stories
             FROM anomalies a
             WHERE a.status = 'active'
               AND a.last_seen_at > NOW() - INTERVAL '2 hours'
@@ -56,7 +61,8 @@ def anomalies() -> list[AnomalyOut]:
             sigma_above=r[6],
             pulse_lat=r[7],
             pulse_lon=r[8],
-            driver_titles=(list(r[9]) if r[9] else [])[:3],
+            synopsis=r[9],
+            driver_stories=[AnomalyDriverStory(**d) for d in (r[10] or [])][:4],
         )
         for r in rows
     ]

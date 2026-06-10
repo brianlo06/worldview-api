@@ -26,12 +26,13 @@ def refresh_representatives(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[st
     """Recompute representative_event_id for recently-active clusters."""
     pool = get_pool()
     with pool.connection() as conn, conn.cursor() as cur:
-        # Prefer members from the last 48h, falling back to any member.
+        # Prefer members from the last 12h, falling back to any member.
         # Long-lived clusters (e.g. NWS alert streams) keep absorbing fresh
         # events while the centroid-nearest member can be days old — showing
         # an expired "Severe Thunderstorm Warning issued June 7" headline on
-        # a story that is current. COALESCE evaluates the second pick only
-        # when no recent member exists.
+        # a story that is current. 12h keeps alert-stream headlines same-day;
+        # COALESCE evaluates the fallback pick only when no recent member
+        # exists.
         cur.execute(
             """
             UPDATE clusters c
@@ -41,7 +42,7 @@ def refresh_representatives(window_hours: int = DEFAULT_WINDOW_HOURS) -> dict[st
                     FROM events e2
                     WHERE e2.cluster_id = c.id
                       AND e2.embedding IS NOT NULL
-                      AND e2.occurred_at > NOW() - INTERVAL '48 hours'
+                      AND e2.occurred_at > NOW() - INTERVAL '12 hours'
                     ORDER BY
                         CASE e2.geo_precision
                             WHEN 'point'   THEN 0

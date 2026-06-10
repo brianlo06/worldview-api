@@ -22,6 +22,63 @@ from ..db import get_pool
 
 log = logging.getLogger(__name__)
 
+# NWS alerts cluster by storm system, not text similarity. Alert text is
+# templated ("SVRTOP The National Weather Service in ... has issued a ..."),
+# so every same-type warning embeds nearly identically and the kNN path
+# snowballs days of nationwide alerts into one mega-cluster (observed at
+# 1,285 members). Instead, an alert joins the cluster of the nearest recent
+# alert of the SAME alert type (raw->properties->event) within this radius.
+NWS_JOIN_RADIUS_M = 300_000
+# Member must be this recent — separates today's squall line from
+# yesterday's in the same place.
+NWS_JOIN_RECENT_HOURS = 6
+# Never join a cluster older than this, so a multi-day weather pattern rolls
+# over into fresh clusters daily instead of accumulating forever (an
+# ever-growing event_count keeps a cluster permanently "breaking").
+NWS_CLUSTER_MAX_AGE_HOURS = 24
+
+
+def _storm_system_candidate(
+    pool, alert_type: str, ev_time, ev_lat: float, ev_lon: float
+) -> list[tuple]:
+    """Find the storm-system cluster for an NWS alert.
+
+    Returns rows shaped like the embedding candidate query —
+    (cluster_id, centroid_embedding, event_count, similarity) — with
+    similarity pinned to 1.0 so the caller's join branch applies unchanged.
+    """
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT c.id,
+                   c.centroid_embedding,
+                   c.event_count,
+                   1.0::float8 AS cos_sim
+            FROM events e
+            JOIN clusters c ON c.id = e.cluster_id
+            WHERE e.source = 'nws'
+              AND e.raw->'properties'->>'event' = %s
+              AND e.occurred_at > %s - INTERVAL '{NWS_JOIN_RECENT_HOURS} hours'
+              AND c.first_seen > %s - INTERVAL '{NWS_CLUSTER_MAX_AGE_HOURS} hours'
+              AND ST_DWithin(
+                    e.location,
+                    ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                    %s
+                  )
+            ORDER BY ST_Distance(
+                e.location,
+                ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
+            ) ASC
+            LIMIT 1
+            """,
+            (
+                alert_type, ev_time, ev_time,
+                ev_lon, ev_lat, NWS_JOIN_RADIUS_M,
+                ev_lon, ev_lat,
+            ),
+        )
+        return cur.fetchall()
+
 
 def cluster_assign_once(
     threshold: float | None = None,
@@ -48,7 +105,9 @@ def cluster_assign_once(
                        e.country_code,
                        e.categories,
                        e.importance,
-                       e.title
+                       e.title,
+                       e.source,
+                       e.raw->'properties'->>'event' AS nws_alert_type
                 FROM events e
                 WHERE e.embedding IS NOT NULL
                   AND e.cluster_id IS NULL
@@ -73,24 +132,32 @@ def cluster_assign_once(
                 ev_cats,
                 ev_imp,
                 ev_title,
+                ev_source,
+                ev_alert_type,
             ) = row
 
-            # Look up the nearest cluster centroid within the time window
-            with pool.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT id,
-                           centroid_embedding,
-                           event_count,
-                           1 - (centroid_embedding <=> %s) AS cos_sim
-                    FROM clusters
-                    WHERE last_seen > %s - INTERVAL '{window_hours} hours'
-                    ORDER BY centroid_embedding <=> %s
-                    LIMIT 1
-                    """,
-                    (ev_emb, ev_time, ev_emb),
+            if ev_source == "nws" and ev_alert_type:
+                # Structured storm-system match — see _storm_system_candidate.
+                candidates = _storm_system_candidate(
+                    pool, ev_alert_type, ev_time, ev_lat, ev_lon
                 )
-                candidates = cur.fetchall()
+            else:
+                # Look up the nearest cluster centroid within the time window
+                with pool.connection() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id,
+                               centroid_embedding,
+                               event_count,
+                               1 - (centroid_embedding <=> %s) AS cos_sim
+                        FROM clusters
+                        WHERE last_seen > %s - INTERVAL '{window_hours} hours'
+                        ORDER BY centroid_embedding <=> %s
+                        LIMIT 1
+                        """,
+                        (ev_emb, ev_time, ev_emb),
+                    )
+                    candidates = cur.fetchall()
 
             if candidates and candidates[0][3] is not None and candidates[0][3] >= threshold:
                 cluster_id, c_emb, c_count, _sim = candidates[0]

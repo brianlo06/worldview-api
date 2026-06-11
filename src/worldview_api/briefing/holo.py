@@ -22,9 +22,11 @@ mistaken for an actual photo of the event.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -87,7 +89,46 @@ def _api_key() -> str | None:
     return settings.holo_api_key or settings.llm_api_key
 
 
-def _call_image_api(prompt: str) -> bytes | None:
+def _call_image_api(prompt: str, cluster_id: str) -> bytes | None:
+    if settings.holo_provider == "pollinations":
+        return _call_pollinations(prompt, cluster_id)
+    return _call_gemini(prompt)
+
+
+def _call_pollinations(prompt: str, cluster_id: str) -> bytes | None:
+    """Free anonymous Flux render from Pollinations. The seed is derived
+    from the cluster id so a retried render converges on the same image.
+    Returns image bytes (typically JPEG), or None on a non-image response
+    (their error pages come back 200 text/html)."""
+    seed = int(hashlib.sha1(cluster_id.encode()).hexdigest()[:8], 16)
+    url = (
+        f"{settings.holo_pollinations_base.rstrip('/')}/prompt/"
+        + urllib.parse.quote(prompt[:1500], safe="")
+    )
+    headers = {}
+    if settings.holo_pollinations_token:
+        headers["Authorization"] = f"Bearer {settings.holo_pollinations_token}"
+    resp = httpx.get(
+        url,
+        headers=headers,
+        params={
+            "width": 832,
+            "height": 1024,
+            "seed": seed,
+            "nologo": "true",
+            "private": "true",
+            "safe": "true",
+        },
+        timeout=settings.holo_timeout_s,
+        follow_redirects=True,
+    )
+    resp.raise_for_status()
+    if not resp.headers.get("content-type", "").startswith("image/"):
+        return None
+    return resp.content
+
+
+def _call_gemini(prompt: str) -> bytes | None:
     """One generateContent call against the native Gemini API (the
     OpenAI-compat layer the text LLMs use doesn't expose image output).
     Returns PNG bytes, or None if the model returned no image (refusal,
@@ -129,7 +170,7 @@ def _generate_one(story: dict) -> bool:
         story.get("title"), story.get("summary"), story.get("category")
     )
     try:
-        png = _call_image_api(prompt)
+        png = _call_image_api(prompt, cluster_id)
     except Exception as e:  # noqa: BLE001 — never propagate past the worker
         log.warning("holo: render failed for %s: %s", cluster_id, e)
         return False
@@ -182,7 +223,10 @@ def schedule_generation(stories: list[dict]) -> None:
     """Kick off background rendering for the given briefing stories (dicts
     with cluster_id/title/summary/category). Stories whose render already
     exists or is already queued are skipped. Returns immediately."""
-    if not settings.holo_enabled or not _api_key():
+    if not settings.holo_enabled:
+        return
+    # Only the Gemini provider needs a key; Pollinations is anonymous.
+    if settings.holo_provider == "gemini" and not _api_key():
         return
     todo: list[dict] = []
     with _inflight_lock:

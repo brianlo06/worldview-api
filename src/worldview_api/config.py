@@ -92,19 +92,30 @@ class Settings(BaseSettings):
     # Best-effort with its own budget (isolation invariant): on cap, pace,
     # timeout, or refusal the client simply keeps the article photo.
     holo_enabled: bool = True
-    # Image model + native Gemini endpoint — the OpenAI-compat layer the text
-    # LLMs use doesn't expose image output. Key defaults to LLM_API_KEY
-    # (already a Gemini key in prod).
+    # Render provider. "pollinations": free Flux endpoint, no key needed
+    # (anonymous tier — our 4-rpm pacing stays inside its limits).
+    # "gemini": the Gemini image model — better quality but needs a
+    # billing-enabled key; the free tier has ZERO image-gen quota.
+    holo_provider: str = "pollinations"
+    holo_pollinations_base: str = "https://image.pollinations.ai"
+    # Pollinations API token (free: register at https://enter.pollinations.ai).
+    # The legacy tokenless endpoint is saturated/sunset — anonymous calls now
+    # 402 almost immediately, so without a token renders just don't happen
+    # (the briefing degrades to article-photo holograms as usual).
+    holo_pollinations_token: str = ""
+    # Gemini settings (holo_provider="gemini"). Native endpoint — the
+    # OpenAI-compat layer the text LLMs use doesn't expose image output.
+    # Key defaults to LLM_API_KEY (already a Gemini key in prod).
     holo_model: str = "gemini-2.5-flash-image"
     holo_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
     holo_api_key: str = ""
-    # Images are ~$0.04 each on the paid tier; renders are cached per cluster
-    # and briefings replay for 20 min, so real spend is far under the cap.
+    # Renders are cached per cluster and briefings replay for 20 min, so the
+    # cap is rarely approached; it bounds spend if the provider is paid.
     holo_daily_cap: int = 60
     holo_max_rpm: int = 4
-    # Image generation is slow (~10-20s); the render thread is off the
-    # request path so a generous timeout costs nothing.
-    holo_timeout_s: float = 40.0
+    # Image generation is slow (Pollinations can take 30s+ under load); the
+    # render thread is off the request path so a generous timeout is free.
+    holo_timeout_s: float = 60.0
     holo_dir: str = "/tmp/worldview-holograms"
     holo_max_age_hours: int = 72
 

@@ -28,9 +28,14 @@ def hologram(cluster_id: UUID) -> Response:
             detail="hologram not rendered",
             headers={"Cache-Control": "no-store"},
         )
+    # Providers differ in output format (Pollinations: JPEG, Gemini: PNG) —
+    # sniff the magic bytes rather than trusting the .png filename.
+    with open(path, "rb") as f:
+        magic = f.read(4)
+    media_type = "image/png" if magic.startswith(b"\x89PNG") else "image/jpeg"
     # One render per cluster id, written once — safe to cache hard.
     return FileResponse(
         path,
-        media_type="image/png",
+        media_type=media_type,
         headers={"Cache-Control": "public, max-age=86400, immutable"},
     )

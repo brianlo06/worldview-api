@@ -11,6 +11,7 @@ from . import (  # noqa: F401
     search,
     share,
     system,
+    tts,
 )
 
 # Include order preserves the original single-file registration order.
@@ -21,6 +22,7 @@ ALL_ROUTERS = (
     clusters.router,
     briefing.router,
     holo.router,
+    tts.router,
     markets.router,
     events.router,
     ask.router,

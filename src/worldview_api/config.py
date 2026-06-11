@@ -122,6 +122,23 @@ class Settings(BaseSettings):
     holo_dir: str = "/tmp/worldview-holograms"
     holo_max_age_hours: int = 72
 
+    # --- Neural TTS (GET /tts) -------------------------------------------------
+    # Piper voice for JARVIS lines (briefing narration, greeting). The model
+    # is baked into the image at /app/voices (docker/Dockerfile); local dev
+    # can point TTS_VOICE elsewhere or leave it missing — synthesis simply
+    # degrades and the client falls back to browser speech.
+    tts_enabled: bool = True
+    tts_voice: str = "/app/voices/en_GB-alan-medium.onnx"
+    tts_dir: str = "/tmp/worldview-tts"
+    tts_max_chars: int = 700
+    # ~7 segments per briefing + static UI lines; unique text is cached, so
+    # this cap is generous headroom, not expected spend.
+    tts_daily_cap: int = 1500
+    tts_timeout_s: float = 30.0
+    # Piper pacing (>1 = slower). Alan at 1.05 sits close to JARVIS cadence.
+    tts_length_scale: float = 1.05
+    tts_max_age_hours: int = 72
+
     # --- Share cards (/share, /s/<id>) ----------------------------------------
     # Where rendered 1200x630 PNG cards are cached on disk (immutable per id).
     share_card_dir: str = "/tmp/worldview-share-cards"

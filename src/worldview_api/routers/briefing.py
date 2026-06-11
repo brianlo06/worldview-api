@@ -147,6 +147,16 @@ def briefing(response: Response) -> BriefingResponse:
     # those stories' renders were already generated on the original run.
     from ..briefing.holo import schedule_generation
 
+    # Pre-warm the neural-speech cache for every segment, intro first — by
+    # the time the client's <audio> asks for story N, it's already on disk.
+    from ..tts import schedule_synthesis
+
+    schedule_synthesis(
+        [script["intro"]]
+        + [st["narration"] for st in script["stories"]]
+        + [script["outro"]]
+    )
+
     scene_by_id = {st["cluster_id"]: st.get("scene", "") for st in script["stories"]}
     schedule_generation(
         [

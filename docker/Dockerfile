@@ -32,12 +32,18 @@ RUN pip install -e . \
         openai \
         numpy \
         pgvector \
-        pillow
+        pillow \
+        piper-tts
 
 # Pre-download the bge-small embedding model so a cold container's first
 # /search isn't a multi-second blocking download. Adds ~80 MB to the image
 # in exchange for predictable cold-start latency.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
+
+# Bake the JARVIS voice (Piper, British male, ~63 MB) so /tts never fetches
+# at runtime. Synthesis runs as a subprocess per request — see tts.py.
+RUN mkdir -p /app/voices \
+ && python -m piper.download_voices en_GB-alan-medium --data-dir /app/voices
 
 EXPOSE 8088
 

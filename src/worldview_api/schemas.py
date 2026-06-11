@@ -145,6 +145,10 @@ class BriefingStoryOut(BaseModel):
     city: str | None = None
     category: str | None = None
     occurred_at: datetime | None = None
+    # Relative URL of this story's holographic scene render (/holo/<id>).
+    # The render is generated in the background after the briefing returns,
+    # so the client polls it; null when hologram generation is disabled.
+    holo_url: str | None = None
 
 
 class BriefingResponse(BaseModel):

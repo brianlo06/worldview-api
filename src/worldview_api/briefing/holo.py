@@ -1,0 +1,199 @@
+"""Per-story holographic scene renders for the briefing.
+
+Each briefing story gets one AI-generated image — a stylized, JARVIS-style
+"holographic tactical reconstruction" of the headline — rendered by the
+Gemini image model. The frontend projects it as a rotating hologram beside
+the globe during playback.
+
+Generation is asynchronous and best-effort: /briefing returns immediately
+with predictable /holo/<cluster_id> URLs, a single background thread fills
+the files in, and the client polls; until (or unless) a render lands it
+shows the story's article photo through the same hologram treatment. Spend
+is gated by its own budget per the budget-isolation invariant, and every
+failure mode (cap, pace, timeout, refusal, bad key) means "no hologram" —
+never an error on the briefing path.
+
+The style is deliberately a translucent monochrome render rather than fake
+photojournalism: it reads as a hologram (the point), image models accept it
+where they refuse photoreal depictions of real violence, and it can't be
+mistaken for an actual photo of the event.
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+import threading
+import time
+from pathlib import Path
+
+import httpx
+
+from ..ask.budget import _InteractiveLLMBudget
+from ..config import settings
+
+log = logging.getLogger(__name__)
+
+# Module-level singleton for hologram generation.
+budget = _InteractiveLLMBudget(
+    cap_getter=lambda: settings.holo_daily_cap,
+    rpm_getter=lambda: settings.holo_max_rpm,
+)
+
+# Cluster ids a worker thread is currently rendering (or has queued), so
+# overlapping briefings don't double-spend on the same story.
+_inflight: set[str] = set()
+_inflight_lock = threading.Lock()
+
+_STYLE = (
+    "A single dramatic scene for a science-fiction holographic news display, "
+    "depicting: {scene}. "
+    "Highly detailed cinematic 3D render, monochromatic deep-cyan and "
+    "electric-blue palette on a pure black background, translucent volumetric "
+    "forms with glowing edges and faint wireframe contours, subtle horizontal "
+    "scanlines, dramatic rim lighting, slight particle haze, vertical portrait "
+    "composition with the subject centered and floating against black. "
+    "Stylized holographic projection, not a photograph. "
+    "No text, no captions, no labels, no logos, no watermarks, no borders, "
+    "no recognizable real people or faces."
+)
+
+_MAX_SCENE_CHARS = 320
+
+
+def hologram_path(cluster_id: str) -> Path:
+    return Path(settings.holo_dir) / f"{cluster_id}.png"
+
+
+def build_prompt(
+    title: str | None, summary: str | None, category: str | None
+) -> str:
+    """Scene description from the story fields, wrapped in the fixed
+    hologram style scaffold. Reuses the narrator's text cleaner so wire
+    codes / NWS boilerplate don't leak into the render prompt."""
+    from .narrate import clean_for_speech
+
+    parts = [clean_for_speech(title, max_chars=160)]
+    body = clean_for_speech(summary, max_chars=200)
+    if body and body.lower() != (parts[0] or "").lower():
+        parts.append(body)
+    scene = " — ".join(p for p in parts if p)[:_MAX_SCENE_CHARS]
+    if category:
+        scene = f"({category} news) {scene}"
+    return _STYLE.format(scene=scene)
+
+
+def _api_key() -> str | None:
+    return settings.holo_api_key or settings.llm_api_key
+
+
+def _call_image_api(prompt: str) -> bytes | None:
+    """One generateContent call against the native Gemini API (the
+    OpenAI-compat layer the text LLMs use doesn't expose image output).
+    Returns PNG bytes, or None if the model returned no image (refusal,
+    text-only answer)."""
+    url = (
+        f"{settings.holo_api_base.rstrip('/')}"
+        f"/models/{settings.holo_model}:generateContent"
+    )
+    resp = httpx.post(
+        url,
+        headers={"x-goog-api-key": _api_key() or ""},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        },
+        timeout=settings.holo_timeout_s,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    for cand in body.get("candidates") or []:
+        for part in (cand.get("content") or {}).get("parts") or []:
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                return base64.b64decode(inline["data"])
+    return None
+
+
+def _generate_one(story: dict) -> bool:
+    """Render one story's hologram to disk. Returns True if a file was
+    written. Budget-gated; all failures are logged and swallowed."""
+    cluster_id = str(story["cluster_id"])
+    path = hologram_path(cluster_id)
+    if path.is_file():
+        return True
+    if not budget.try_acquire():
+        log.info("holo: budget gate — skipping render for %s", cluster_id)
+        return False
+    prompt = build_prompt(
+        story.get("title"), story.get("summary"), story.get("category")
+    )
+    try:
+        png = _call_image_api(prompt)
+    except Exception as e:  # noqa: BLE001 — never propagate past the worker
+        log.warning("holo: render failed for %s: %s", cluster_id, e)
+        return False
+    if not png:
+        log.info("holo: model returned no image for %s", cluster_id)
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(png)
+    tmp.rename(path)  # atomic: the GET endpoint never sees a partial file
+    log.info("holo: rendered %s (%d bytes)", cluster_id, len(png))
+    return True
+
+
+def _prune_old() -> None:
+    """Drop renders past the retention window so /tmp doesn't grow forever
+    (briefing stories age out of the top list within a day or two anyway)."""
+    cutoff = time.time() - settings.holo_max_age_hours * 3600
+    root = Path(settings.holo_dir)
+    if not root.is_dir():
+        return
+    for f in root.glob("*.png"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _worker(stories: list[dict]) -> None:
+    try:
+        _prune_old()
+        min_interval = 60.0 / max(1, settings.holo_max_rpm)
+        first = True
+        for story in stories:
+            if not first:
+                # Pace between calls so the RPM gate in try_acquire (and the
+                # provider) never sees a burst; this thread is off the
+                # request path, so sleeping here is free.
+                time.sleep(min_interval)
+            first = False
+            _generate_one(story)
+    finally:
+        with _inflight_lock:
+            for story in stories:
+                _inflight.discard(str(story["cluster_id"]))
+
+
+def schedule_generation(stories: list[dict]) -> None:
+    """Kick off background rendering for the given briefing stories (dicts
+    with cluster_id/title/summary/category). Stories whose render already
+    exists or is already queued are skipped. Returns immediately."""
+    if not settings.holo_enabled or not _api_key():
+        return
+    todo: list[dict] = []
+    with _inflight_lock:
+        for s in stories:
+            cid = str(s["cluster_id"])
+            if cid in _inflight or hologram_path(cid).is_file():
+                continue
+            _inflight.add(cid)
+            todo.append(s)
+    if not todo:
+        return
+    threading.Thread(
+        target=_worker, args=(todo,), daemon=True, name="holo-render"
+    ).start()

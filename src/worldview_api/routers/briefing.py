@@ -120,6 +120,23 @@ def briefing(response: Response) -> BriefingResponse:
     if not selected:
         return BriefingResponse(intro="", stories=[], outro="", source="fallback")
 
+    # Kick off hologram renders now, before the narration LLM call, so the
+    # images generate while the script is being written. Fire-and-forget:
+    # the client polls /holo/<id> and falls back to the article photo.
+    from ..briefing.holo import schedule_generation
+
+    schedule_generation(
+        [
+            {
+                "cluster_id": str(s["id"]),
+                "title": s["title"],
+                "summary": s["summary"],
+                "category": s["category"],
+            }
+            for s in selected
+        ]
+    )
+
     inputs: list[BriefingInput] = [
         {
             "cluster_id": str(s["id"]),
@@ -154,6 +171,7 @@ def briefing(response: Response) -> BriefingResponse:
             city=s["city"],
             category=s["category"],
             occurred_at=s["occurred_at"],
+            holo_url=f"/holo/{s['id']}" if settings.holo_enabled else None,
         )
         for s in selected
     ]

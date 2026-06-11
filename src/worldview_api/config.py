@@ -85,6 +85,29 @@ class Settings(BaseSettings):
     # starve the rare, user-triggered briefing. Empty = inherit LLM_MODEL.
     briefing_llm_model: str = ""
 
+    # --- Briefing holograms (AI scene renders, GET /holo/<id>) ----------------
+    # One stylized "holographic reconstruction" image per briefing story,
+    # rendered in the background by the Gemini image model and served from
+    # /holo/<cluster_id> for the frontend's rotating-hologram projection.
+    # Best-effort with its own budget (isolation invariant): on cap, pace,
+    # timeout, or refusal the client simply keeps the article photo.
+    holo_enabled: bool = True
+    # Image model + native Gemini endpoint — the OpenAI-compat layer the text
+    # LLMs use doesn't expose image output. Key defaults to LLM_API_KEY
+    # (already a Gemini key in prod).
+    holo_model: str = "gemini-2.5-flash-image"
+    holo_api_base: str = "https://generativelanguage.googleapis.com/v1beta"
+    holo_api_key: str = ""
+    # Images are ~$0.04 each on the paid tier; renders are cached per cluster
+    # and briefings replay for 20 min, so real spend is far under the cap.
+    holo_daily_cap: int = 60
+    holo_max_rpm: int = 4
+    # Image generation is slow (~10-20s); the render thread is off the
+    # request path so a generous timeout costs nothing.
+    holo_timeout_s: float = 40.0
+    holo_dir: str = "/tmp/worldview-holograms"
+    holo_max_age_hours: int = 72
+
     # --- Share cards (/share, /s/<id>) ----------------------------------------
     # Where rendered 1200x630 PNG cards are cached on disk (immutable per id).
     share_card_dir: str = "/tmp/worldview-share-cards"

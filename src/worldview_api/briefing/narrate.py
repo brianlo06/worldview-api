@@ -105,6 +105,10 @@ def clean_for_speech(text: str | None, max_chars: int = 220) -> str:
 class _NarrationStory(BaseModel):
     cluster_id: str
     narration: str = Field("", max_length=600)
+    # One-sentence literal visual depiction of the event, consumed by the
+    # hologram image generator (briefing/holo.py). Optional — empty means
+    # the hologram prompt falls back to cleaned title/summary.
+    scene: str = Field("", max_length=400)
 
 
 class _BriefingScript(BaseModel):
@@ -166,12 +170,19 @@ e.g. "The world's been busy while you were away — here's what matters right \
 now."
 - outro: one short sign-off, e.g. "That's the picture for now. I'll keep an \
 eye on things."
+- scene (per story): ONE vivid sentence describing a literal, concrete \
+picture of the event for an image generator — physical subjects, action, \
+setting. Example: "Cruise missiles streaking through the night sky toward a \
+military compound, explosions blooming among radar domes." Depict the event \
+itself, never a newsroom, anchor, map, or screen. No real people's names or \
+likenesses, no words or numbers to draw, no abstract concepts.
 
 Output format — respond with ONLY a single JSON object and nothing else (no \
 markdown fences, no commentary). Include exactly one entry per story id you \
 were given, in the SAME order, reusing the given id verbatim:
 {"intro": "<opening>", "stories": [{"cluster_id": "<id>", "narration": \
-"<2-3 sentence spoken narration>"}], "outro": "<sign-off>"}
+"<2-3 sentence spoken narration>", "scene": "<one-sentence visual \
+depiction>"}], "outro": "<sign-off>"}
 """
 
 
@@ -238,7 +249,11 @@ def _fallback_script(stories: Sequence[BriefingInput]) -> BriefingScriptOut:
     return {
         "intro": _default_intro(len(stories)),
         "stories": [
-            {"cluster_id": s["cluster_id"], "narration": _fallback_narration(s)}
+            {
+                "cluster_id": s["cluster_id"],
+                "narration": _fallback_narration(s),
+                "scene": "",
+            }
             for s in stories
         ],
         "outro": _DEFAULT_OUTRO,
@@ -283,9 +298,10 @@ def _call_llm(stories: Sequence[BriefingInput]) -> str | None:
             # A little looser than the summarizer: narration should sound
             # alive, and reconcile() backstops any structural drift.
             temperature=0.6,
-            # 5 stories x 2-3 sentences + intro/outro needs more headroom
-            # than the old 1-2 sentence format.
-            max_tokens=1300,
+            # 5 stories x 2-3 sentences + intro/outro + a one-sentence
+            # hologram scene per story needs more headroom than the old
+            # 1-2 sentence format.
+            max_tokens=1600,
             stream=False,
             timeout=settings.briefing_llm_timeout_s,
         )
@@ -327,13 +343,18 @@ def _reconcile(
     Missing / blank narrations (model dropped or mangled an id) are filled from
     the cleaned-up fallback; extra/invented ids are ignored.
     """
-    by_id = {s.cluster_id: (s.narration or "").strip() for s in parsed.stories}
+    by_id = {
+        s.cluster_id: ((s.narration or "").strip(), (s.scene or "").strip())
+        for s in parsed.stories
+    }
     out_stories: list[dict] = []
     for s in stories:
-        narration = by_id.get(s["cluster_id"], "")
+        narration, scene = by_id.get(s["cluster_id"], ("", ""))
         if not narration:
             narration = _fallback_narration(s)
-        out_stories.append({"cluster_id": s["cluster_id"], "narration": narration})
+        out_stories.append(
+            {"cluster_id": s["cluster_id"], "narration": narration, "scene": scene}
+        )
     intro = (parsed.intro or "").strip() or _default_intro(len(stories))
     outro = (parsed.outro or "").strip() or _DEFAULT_OUTRO
     return {"intro": intro, "stories": out_stories, "outro": outro}

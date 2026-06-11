@@ -120,23 +120,6 @@ def briefing(response: Response) -> BriefingResponse:
     if not selected:
         return BriefingResponse(intro="", stories=[], outro="", source="fallback")
 
-    # Kick off hologram renders now, before the narration LLM call, so the
-    # images generate while the script is being written. Fire-and-forget:
-    # the client polls /holo/<id> and falls back to the article photo.
-    from ..briefing.holo import schedule_generation
-
-    schedule_generation(
-        [
-            {
-                "cluster_id": str(s["id"]),
-                "title": s["title"],
-                "summary": s["summary"],
-                "category": s["category"],
-            }
-            for s in selected
-        ]
-    )
-
     inputs: list[BriefingInput] = [
         {
             "cluster_id": str(s["id"]),
@@ -155,6 +138,28 @@ def briefing(response: Response) -> BriefingResponse:
             log.info("briefing: narration degraded — replaying cached LLM script")
             return cached
     narration_by_id = {st["cluster_id"]: st["narration"] for st in script["stories"]}
+
+    # Kick off hologram renders, fire-and-forget — the client polls
+    # /holo/<id> and shows the article photo until a render lands. Runs
+    # after narration on purpose: the narrator writes each story's `scene`
+    # (a literal visual depiction), which makes a far better image prompt
+    # than the raw headline. On the replay path above this is skipped —
+    # those stories' renders were already generated on the original run.
+    from ..briefing.holo import schedule_generation
+
+    scene_by_id = {st["cluster_id"]: st.get("scene", "") for st in script["stories"]}
+    schedule_generation(
+        [
+            {
+                "cluster_id": str(s["id"]),
+                "title": s["title"],
+                "summary": s["summary"],
+                "category": s["category"],
+                "scene": scene_by_id.get(str(s["id"]), ""),
+            }
+            for s in selected
+        ]
+    )
 
     stories_out = [
         BriefingStoryOut(

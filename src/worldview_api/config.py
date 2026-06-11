@@ -97,11 +97,14 @@ class Settings(BaseSettings):
     # "gemini": the Gemini image model — better quality but needs a
     # billing-enabled key; the free tier has ZERO image-gen quota.
     holo_provider: str = "pollinations"
-    holo_pollinations_base: str = "https://image.pollinations.ai"
-    # Pollinations API token (free: register at https://enter.pollinations.ai).
-    # The legacy tokenless endpoint is saturated/sunset — anonymous calls now
-    # 402 almost immediately, so without a token renders just don't happen
-    # (the briefing degrades to article-photo holograms as usual).
+    # The current Pollinations platform (gen.pollinations.ai). The legacy
+    # tokenless host (image.pollinations.ai) is saturated/sunset — it 402s
+    # immediately and ignores tokens.
+    holo_pollinations_base: str = "https://gen.pollinations.ai"
+    holo_pollinations_model: str = "flux"
+    # API token (free: register at https://enter.pollinations.ai), sent as a
+    # Bearer header. Without it renders just don't happen and the briefing
+    # degrades to article-photo holograms as usual.
     holo_pollinations_token: str = ""
     # Gemini settings (holo_provider="gemini"). Native endpoint — the
     # OpenAI-compat layer the text LLMs use doesn't expose image output.

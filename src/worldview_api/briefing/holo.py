@@ -47,20 +47,18 @@ budget = _InteractiveLLMBudget(
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
 
+# Scene FIRST, style after — Flux weights the head of the prompt heavily.
+# Leading with style text ("holographic news display...") makes it draw a
+# literal display instead of the event; a concrete scene up front followed by
+# a render-style tail produces the event as a hologram.
 _STYLE = (
-    "A single dramatic scene for a science-fiction holographic news display, "
-    "depicting: {scene}. "
-    "Highly detailed cinematic 3D render, monochromatic deep-cyan and "
-    "electric-blue palette on a pure black background, translucent volumetric "
-    "forms with glowing edges and faint wireframe contours, subtle horizontal "
-    "scanlines, dramatic rim lighting, slight particle haze, vertical portrait "
-    "composition with the subject centered and floating against black. "
-    "Stylized holographic projection, not a photograph. "
-    "No text, no captions, no labels, no logos, no watermarks, no borders, "
-    "no recognizable real people or faces."
+    "{scene}. Rendered as a translucent monochrome cyan hologram on a pure "
+    "black background — glowing edges, faint wireframe contours, subtle "
+    "scanlines, volumetric glow, cinematic lighting, vertical composition. "
+    "No text, no captions, no watermarks."
 )
 
-_MAX_SCENE_CHARS = 320
+_MAX_SCENE_CHARS = 360
 
 
 def hologram_path(cluster_id: str) -> Path:
@@ -68,21 +66,27 @@ def hologram_path(cluster_id: str) -> Path:
 
 
 def build_prompt(
-    title: str | None, summary: str | None, category: str | None
+    title: str | None,
+    summary: str | None,
+    category: str | None,
+    scene: str | None = None,
 ) -> str:
-    """Scene description from the story fields, wrapped in the fixed
-    hologram style scaffold. Reuses the narrator's text cleaner so wire
-    codes / NWS boilerplate don't leak into the render prompt."""
+    """Hologram render prompt. Prefers the narrator's LLM-written `scene`
+    (a literal one-sentence depiction of the event); falls back to cleaned
+    title/summary — the narrator's text cleaner keeps wire codes / NWS
+    boilerplate out of the render prompt."""
     from .narrate import clean_for_speech
 
-    parts = [clean_for_speech(title, max_chars=160)]
-    body = clean_for_speech(summary, max_chars=200)
-    if body and body.lower() != (parts[0] or "").lower():
-        parts.append(body)
-    scene = " — ".join(p for p in parts if p)[:_MAX_SCENE_CHARS]
-    if category:
-        scene = f"({category} news) {scene}"
-    return _STYLE.format(scene=scene)
+    scene = (scene or "").strip().rstrip(".")
+    if not scene:
+        parts = [clean_for_speech(title, max_chars=160)]
+        body = clean_for_speech(summary, max_chars=200)
+        if body and body.lower() != (parts[0] or "").lower():
+            parts.append(body)
+        scene = " — ".join(p for p in parts if p)
+        if category:
+            scene = f"({category} news) {scene}"
+    return _STYLE.format(scene=scene[:_MAX_SCENE_CHARS])
 
 
 def _api_key() -> str | None:
@@ -96,13 +100,13 @@ def _call_image_api(prompt: str, cluster_id: str) -> bytes | None:
 
 
 def _call_pollinations(prompt: str, cluster_id: str) -> bytes | None:
-    """Free anonymous Flux render from Pollinations. The seed is derived
-    from the cluster id so a retried render converges on the same image.
-    Returns image bytes (typically JPEG), or None on a non-image response
-    (their error pages come back 200 text/html)."""
-    seed = int(hashlib.sha1(cluster_id.encode()).hexdigest()[:8], 16)
+    """One GET /image/{prompt} render from gen.pollinations.ai. The seed is
+    derived from the cluster id so a retried render converges on the same
+    image (their seed range tops out at 2^31-1, hence the modulo). Returns
+    image bytes (typically JPEG), or None on a non-image response."""
+    seed = int(hashlib.sha1(cluster_id.encode()).hexdigest()[:8], 16) % 2_000_000_000
     url = (
-        f"{settings.holo_pollinations_base.rstrip('/')}/prompt/"
+        f"{settings.holo_pollinations_base.rstrip('/')}/image/"
         + urllib.parse.quote(prompt[:1500], safe="")
     )
     headers = {}
@@ -112,12 +116,10 @@ def _call_pollinations(prompt: str, cluster_id: str) -> bytes | None:
         url,
         headers=headers,
         params={
+            "model": settings.holo_pollinations_model,
             "width": 832,
             "height": 1024,
             "seed": seed,
-            "nologo": "true",
-            "private": "true",
-            "safe": "true",
         },
         timeout=settings.holo_timeout_s,
         follow_redirects=True,
@@ -167,7 +169,10 @@ def _generate_one(story: dict) -> bool:
         log.info("holo: budget gate — skipping render for %s", cluster_id)
         return False
     prompt = build_prompt(
-        story.get("title"), story.get("summary"), story.get("category")
+        story.get("title"),
+        story.get("summary"),
+        story.get("category"),
+        story.get("scene"),
     )
     try:
         png = _call_image_api(prompt, cluster_id)

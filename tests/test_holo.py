@@ -44,10 +44,21 @@ class PromptTests(unittest.TestCase):
     def test_prompt_carries_story_and_style(self):
         p = H.build_prompt(STORY["title"], STORY["summary"], STORY["category"])
         self.assertIn("Severe flooding displaces thousands", p)
-        self.assertIn("holographic", p)
-        self.assertIn("not a photograph", p)
+        self.assertIn("hologram", p)
         self.assertIn("disaster", p)
         self.assertIn("No text", p)
+        # Scene leads the prompt — style text first makes Flux draw a
+        # literal "display" instead of the event.
+        self.assertTrue(p.startswith("(disaster news) Severe flooding"))
+
+    def test_prompt_prefers_llm_scene(self):
+        p = H.build_prompt(
+            STORY["title"], STORY["summary"], STORY["category"],
+            scene="Floodwater surging through a city street at night.",
+        )
+        self.assertTrue(p.startswith("Floodwater surging"))
+        self.assertNotIn("Severe flooding displaces", p)
+        self.assertIn("hologram", p)
 
     def test_prompt_cleans_separators_and_dedupes_summary(self):
         p = H.build_prompt("Quake hits region", "Quake hits region", None)
@@ -56,7 +67,7 @@ class PromptTests(unittest.TestCase):
 
     def test_prompt_survives_missing_fields(self):
         p = H.build_prompt(None, None, None)
-        self.assertIn("holographic", p)
+        self.assertIn("hologram", p)
 
 
 class GenerateTests(unittest.TestCase):
@@ -93,8 +104,8 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"JPEGDATA")
         # Prompt rides in the URL path; seed is stable per cluster.
         url = get.call_args[0][0]
-        self.assertIn("/prompt/", url)
-        self.assertIn("holographic", urllib.parse.unquote(url))
+        self.assertIn("/image/", url)
+        self.assertIn("hologram", urllib.parse.unquote(url))
         seed1 = get.call_args[1]["params"]["seed"]
         path.unlink()
         H.budget._reset_for_tests()  # clear the RPM pace for the retry

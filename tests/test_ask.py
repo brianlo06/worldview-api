@@ -46,7 +46,7 @@ class NormalizeTests(unittest.TestCase):
     def test_generic_country_question(self):
         k, intent = A.normalize_question("what's happening in Ukraine?")
         self.assertEqual(intent, "country")
-        self.assertTrue(k.endswith(":UA"))
+        self.assertTrue(k.endswith(":UP"))  # FIPS code for Ukraine
 
     def test_specific_question_stays_topical(self):
         # Mentions a country but is a specific question → semantic search, not

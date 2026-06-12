@@ -23,8 +23,7 @@ from typing import Sequence, TypedDict
 import openai
 from pydantic import BaseModel, Field, ValidationError
 
-# regions is FIPS-aware (GDELT codes); places.country_name is ISO-only and
-# mislabels collision codes (FIPS IS=Israel would render as Iceland).
+# regions is the FIPS-aware (GDELT codes) display-name map.
 from ..regions import region_name as country_name
 from ..config import settings
 from ..llm import get_client as _get_client

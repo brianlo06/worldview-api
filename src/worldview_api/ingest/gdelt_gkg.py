@@ -27,6 +27,7 @@ import httpx
 from psycopg.types.json import Jsonb
 
 from ..db import get_pool
+from ..titles import is_generic_title
 from .common import GDELT_LASTUPDATE_URL, url_hash
 from .common import http_headers as _http_headers
 from .common import parse_gdelt_timestamp as parse_gkg_date
@@ -395,26 +396,14 @@ def _is_brand_only_title(title: str, outlet_host: str) -> bool:
     return brand in t_norm and len(t_norm) <= len(brand) + 4
 
 
-# Section/index page names that show up as <title> when GDELT links a site's
-# section front rather than an article (observed: arabnews.com page titled
-# "World" becoming a high-ranked "story"). Matched whole-title after
-# normalization — a real headline never consists solely of one of these.
-_GENERIC_SECTION_TITLES: frozenset[str] = frozenset({
-    "world", "world news", "news", "home", "homepage", "latest news",
-    "breaking news", "top stories", "opinion", "editorial", "sports", "sport",
-    "business", "politics", "entertainment", "lifestyle", "culture", "health",
-    "technology", "tech", "science", "video", "videos", "photos", "live",
-    "local news", "national", "international", "africa", "americas", "asia",
-    "europe", "middle east", "uk", "us",
-})
-
-
 def _is_junk_title(title: str, outlet_host: str) -> bool:
-    """Brand-only titles plus bare section names ("World", "Top Stories")."""
+    """Brand-only titles plus bare section names ("World", "Top Stories").
+    The section-name half lives in worldview_api.titles so the
+    representative picker and breaking gate apply the same test to events
+    ingested before this gate existed."""
     if _is_brand_only_title(title, outlet_host):
         return True
-    t = re.sub(r"[\s|·\-–—:]+", " ", title.strip().lower()).strip()
-    return t in _GENERIC_SECTION_TITLES
+    return is_generic_title(title)
 
 
 def _clean_loc_short(loc_name: str | None, geo_precision: str) -> str | None:

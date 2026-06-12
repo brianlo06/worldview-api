@@ -68,7 +68,7 @@ def search(body: SearchRequest) -> list[SearchResultOut]:
             continue
         importance = r[12]
         event_count = r[10]
-        breaking = is_breaking(event_count, importance)
+        breaking = is_breaking(event_count, importance, r[1])
         results.append(
             SearchResultOut(
                 cluster_id=r[0],

@@ -86,7 +86,7 @@ def _query_clusters(
     for r in rows:
         importance = r[14]
         event_count = r[8]
-        breaking = is_breaking(event_count, importance)
+        breaking = is_breaking(event_count, importance, r[1])
         out.append(
             ClusterOut(
                 id=r[0],
@@ -206,7 +206,7 @@ def cluster_detail(cluster_id: UUID) -> ClusterDetailOut:
         members = cur.fetchall()
 
     importance = c[14]
-    breaking = is_breaking(c[8], importance)
+    breaking = is_breaking(c[8], importance, c[1])
     return ClusterDetailOut(
         id=c[0],
         title=c[1],

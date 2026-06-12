@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .titles import is_generic_title
+
 # Threshold sits above the typical band of the rescaled importance distribution
 # (median ~0.55), so the importance branch fires only on top-of-distribution
 # events. event_count is an independent escape hatch — a story covered by
@@ -10,13 +12,21 @@ BREAKING_EVENT_COUNT_THRESHOLD = 10
 BREAKING_IMPORTANCE_THRESHOLD = 0.92
 
 
-def is_breaking(event_count: int, importance: float | None) -> bool:
+def is_breaking(
+    event_count: int, importance: float | None, title: str | None = None
+) -> bool:
     """Whether a cluster qualifies as breaking news.
 
     Two independent branches:
       - broad coverage (event_count >= 10)
       - top-of-distribution importance (>= 0.92)
+
+    A junk title ("World" — a scraped section page, not a headline) vetoes
+    both: legacy magnet clusters from before the ingest title gate can carry
+    huge member counts, and the breaking list must never surface them.
     """
+    if title is not None and is_generic_title(title):
+        return False
     if event_count >= BREAKING_EVENT_COUNT_THRESHOLD:
         return True
     if importance is not None and importance >= BREAKING_IMPORTANCE_THRESHOLD:

@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 _SLUG_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _SLUG_LEN = 10
-_VALID_KINDS = {"ask", "city", "cluster", "view"}
+_VALID_KINDS = {"ask", "city", "cluster", "view", "pull"}
 
 
 @dataclass

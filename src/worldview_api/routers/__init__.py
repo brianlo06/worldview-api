@@ -6,6 +6,7 @@ from . import (  # noqa: F401
     briefing,
     clusters,
     events,
+    game,
     holo,
     markets,
     notepad,
@@ -29,4 +30,5 @@ ALL_ROUTERS = (
     ask.router,
     share.router,
     notepad.router,
+    game.router,
 )

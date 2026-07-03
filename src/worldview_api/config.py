@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     # --- Share cards (/share, /s/<id>) ----------------------------------------
     # Where rendered 1200x630 PNG cards are cached on disk (immutable per id).
     share_card_dir: str = "/tmp/worldview-share-cards"
+    # Cached thumbnails for permanent game cards.
+    game_card_image_dir: str = "/tmp/worldview-game-card-images"
     # Public base URL the share HTML redirects humans into (the SPA apex).
     share_redirect_base: str = "https://jarvisworlds.com"
     # Absolute base for og:image / share links (apex; Caddy routes /s/* to API).

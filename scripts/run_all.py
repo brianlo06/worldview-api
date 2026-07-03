@@ -27,6 +27,7 @@ from worldview_api.cluster import assign as cluster_assign
 from worldview_api.cluster import representative as cluster_representative
 from worldview_api.cluster import summarize as cluster_summarize
 from worldview_api.embed import embed as embed_mod
+from worldview_api.game import mint as game_mint
 from worldview_api.ingest import currencies, enrich, gdelt, gdelt_gkg, markets, weather
 
 
@@ -58,6 +59,10 @@ def main() -> None:
         # traffic hits a warm cache instead of the free-tier LLM. Runs last so
         # it reflects the freshest clusters/summaries from this cycle.
         ("Ask prebake",  lambda: ask_prebake.prebake_once()),
+        # Mint the day's game card pool (SCAN module). Idempotent per UTC
+        # day — the first cycle after midnight mints, the rest no-op. Runs
+        # after summarization so cards snapshot the freshest summaries.
+        ("Game mint",    lambda: game_mint.mint_if_needed()),
         # Retention is enforced in the database by a pg_cron job
         # (sql/008_pg_cron.sql), not here — the ingest loop no longer prunes.
     ]

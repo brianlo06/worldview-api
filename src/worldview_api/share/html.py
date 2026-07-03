@@ -16,6 +16,9 @@ from .store import Share
 
 def _redirect_url(share: Share) -> str:
     base = settings.share_redirect_base.rstrip("/")
+    # Game pulls recruit into the game, not the news view.
+    if share.kind == "pull":
+        return f"{base}/game"
     params = share.params or {}
     if params:
         return f"{base}/?{urlencode(params)}"
@@ -23,6 +26,10 @@ def _redirect_url(share: Share) -> str:
 
 
 def _og_title(share: Share) -> str:
+    if share.kind == "pull":
+        tier = str((share.stats or {}).get("tier", "")).upper()
+        prefix = f"{tier} CARD — " if tier else ""
+        return f"{prefix}{share.title or 'World Cache'} — WORLDVIEW"
     if share.question:
         return f"“{share.question}” — WORLDVIEW"
     if share.place:
@@ -31,6 +38,12 @@ def _og_title(share: Share) -> str:
 
 
 def _og_description(share: Share) -> str:
+    if share.kind == "pull":
+        tier = str((share.stats or {}).get("tier", "a")).lower()
+        return (
+            f"I pulled a {tier} card from today's real news. "
+            "Scan the globe, collect the world — free daily scans at jarvisworlds.com/game."
+        )
     if share.answer:
         return share.answer
     if share.place:

@@ -76,7 +76,96 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, max_lines: int
     return lines
 
 
+# Game pull cards: tier + category palettes mirror the frontend
+# (globe/categories.ts + game/GameCard.tsx) so the PNG reads as the same card.
+_TIER_COLORS = {
+    "common": (143, 163, 184),
+    "uncommon": (126, 229, 163),
+    "rare": (76, 201, 255),
+    "epic": (199, 155, 255),
+    "legendary": (255, 209, 102),
+}
+_CATEGORY_COLORS = {
+    "breaking": (255, 90, 74),
+    "politics": (255, 209, 102),
+    "conflict": (255, 142, 90),
+    "business": (126, 229, 163),
+    "weather": (127, 184, 255),
+    "quake": (199, 155, 255),
+    "social": (158, 236, 255),
+    "ai": (232, 121, 249),
+}
+
+
+def _render_pull_card(share: Share) -> bytes:
+    """1200x630 flex card for a game pull. Reads only the share snapshot
+    (title/place/stats) — never the clusters table, which is pruned."""
+    stats = share.stats or {}
+    tier = str(stats.get("tier", "common")).lower()
+    category = str(stats.get("category") or "").lower()
+    tier_col = _TIER_COLORS.get(tier, _TIER_COLORS["common"])
+    cat_col = _CATEGORY_COLORS.get(category, CYAN)
+
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img)
+    for y in range(0, H, 3):
+        d.line([(0, y), (W, y)], fill=(4, 8, 16))
+    # Double frame: outer chrome + inner category-colored card frame.
+    d.rectangle([0, 0, W - 1, H - 1], outline=(20, 40, 60), width=2)
+    d.rectangle([26, 26, W - 27, H - 27], outline=cat_col, width=3)
+
+    # Brand + attribution.
+    d.polygon([(60, 58), (88, 58), (60, 86)], fill=CYAN)
+    d.text((100, 56), "WORLD CACHE", font=_font(34, bold=True), fill=BRIGHT)
+    d.text((102, 96), "jarvisworlds.com/game", font=_font(20), fill=DIM)
+
+    # Tier banner.
+    tier_label = tier.upper()
+    tf = _font(30, bold=True)
+    tw = d.textlength(tier_label, font=tf)
+    d.rectangle([W - 120 - tw, 52, W - 60, 100], outline=tier_col, width=2)
+    d.text((W - 90 - tw, 62), tier_label, font=tf, fill=tier_col)
+    # Legendary gets foil corner ticks.
+    if tier == "legendary":
+        for x0, y0, x1, y1 in ((40, 40, 110, 40), (40, 40, 40, 110),
+                               (W - 111, H - 41, W - 41, H - 41),
+                               (W - 41, H - 111, W - 41, H - 41)):
+            d.line([(x0, y0), (x1, y1)], fill=tier_col, width=4)
+
+    # Headline.
+    y = 210
+    for line in _wrap(d, share.title or "A world event", _font(46, bold=True), 1000, 3):
+        d.text((60, y), line, font=_font(46, bold=True), fill=TEXT)
+        y += 60
+
+    y += 10
+    d.line([(60, y), (W - 60, y)], fill=cat_col, width=2)
+    y += 26
+
+    # Meta row: place, category, pull date.
+    bits = []
+    if share.place:
+        bits.append(share.place)
+    if category:
+        bits.append(category.upper())
+    if stats.get("pool_date"):
+        bits.append(f"POOL {stats['pool_date']}")
+    if bits:
+        d.text((60, y), "   ·   ".join(bits), font=_font(24, bold=True), fill=cat_col)
+
+    d.text((60, H - 70), "REAL NEWS, MINTED DAILY — FREE SCANS AT jarvisworlds.com/game",
+           font=_font(22, bold=True), fill=CYAN)
+
+    from io import BytesIO
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def render_card(share: Share) -> bytes:
+    if share.kind == "pull":
+        return _render_pull_card(share)
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
 

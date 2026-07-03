@@ -117,6 +117,9 @@ services:
       # must sit side-by-side on the deploy host. Override with FRONTEND_DIST
       # in .env if the build lives elsewhere.
       - ${FRONTEND_DIST:-../worldview/dist}:/srv/frontend:ro
+      # World Notepad SPA, served at /notepad/* (see Caddyfile).
+      # world-notes/ must sit alongside worldview-api/ on the deploy host.
+      - ${NOTEPAD_DIST:-../world-notes/dist}:/srv/notepad:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

@@ -30,6 +30,15 @@
         reverse_proxy api:8088
     }
 
+    # World Notepad SPA — served from /notepad/*
+    # handle_path strips the /notepad prefix so /srv/notepad/dist assets resolve
+    # correctly when Vite is built with base: '/notepad/'.
+    handle_path /notepad* {
+        root * /srv/notepad
+        try_files {path} /index.html
+        file_server
+    }
+
     handle {
         root * /srv/frontend
         try_files {path} /index.html

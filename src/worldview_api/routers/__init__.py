@@ -8,6 +8,7 @@ from . import (  # noqa: F401
     events,
     holo,
     markets,
+    notepad,
     search,
     share,
     system,
@@ -27,4 +28,5 @@ ALL_ROUTERS = (
     events.router,
     ask.router,
     share.router,
+    notepad.router,
 )

@@ -80,6 +80,7 @@ _THEME_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(EARTHQUAKE|VOLCANIC|VOLCANO|TSUNAMI|SEISMIC)", re.I), "quake"),
     (re.compile(r"(FLOOD|HURRICANE|TORNADO|CYCLONE|STORM|DROUGHT|WILDFIRE|BLIZZARD|TYPHOON|WEATHER_)", re.I), "weather"),
     (re.compile(r"(PROTEST|RIOT|STRIKE|DEMONSTRATION|ACTIVISM|CIVIL_UNREST)", re.I), "social"),
+    (re.compile(r"(ARTIFICIAL_INTELLIG|MACHINE_LEARN|DEEP_LEARN|NEURAL_NETWORK|ROBOTICS|CHATBOT|GENERATIVE_AI|TECH_AI)", re.I), "ai"),
     (re.compile(r"(ECON_|TRADE|FINANCE|BUSINESS|MARKETS|INFLATION|UNEMPLOYMENT|CORRUPTION)", re.I), "business"),
     (re.compile(r"(ELECTION|GOV_|POLITICAL|DIPLOM|REBEL|REGIME|SANCTION|TREATY)", re.I), "politics"),
 )
@@ -94,6 +95,16 @@ _THEME_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 #   WB_   — World Bank topic taxonomy (thousands of codes). e.g.
 #           WB_678_DIGITAL_GOVERNMENT gets sprayed onto digital-economy
 #           articles regardless of topic.
+# GDELT's theme taxonomy has no AI-specific codes, so we fall back to title
+# keyword matching. These terms are unambiguous enough to override whatever
+# theme-based category was assigned.
+_AI_TITLE_RE = re.compile(
+    r"(artificial intelligence|chatgpt|openai|machine learning|deep learning|"
+    r"large language model|\bllm\b|deepmind|anthropic|generative ai|"
+    r"\bgpt[-\s]?[0-9o])",
+    re.I,
+)
+
 _NOISE_PREFIXES: tuple[str, ...] = ("EPU_", "WB_")
 
 # Specific known-noise tokens that don't have a useful prefix to filter on.
@@ -485,6 +496,8 @@ def ingest_gkg_once() -> dict[str, Any]:
                 themes = r.get("V2ENHANCEDTHEMES") or r.get("V1THEMES") or ""
                 theme_count = len([t for t in themes.split(";") if t.strip()])
                 category = themes_to_category(themes)
+                if title and _AI_TITLE_RE.search(title):
+                    category = "ai"
 
                 image_url = (r.get("V21SHAREIMG") or "").strip() or None
                 outlet = outlet_host

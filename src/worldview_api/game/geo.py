@@ -44,8 +44,18 @@ CONTINENT_OF: dict[str, str] = {
     code: continent for continent, codes in _CONTINENTS.items() for code in codes
 }
 
+CONTINENT_NAMES: frozenset[str] = frozenset(_CONTINENTS)
+
 
 def continent_of(country_code: str | None) -> str | None:
     if not country_code:
         return None
     return CONTINENT_OF.get(country_code.strip().upper())
+
+
+def continent_codes(name: str | None) -> frozenset[str] | None:
+    """Country codes for a continent name, or None if unknown."""
+    if not name:
+        return None
+    codes = _CONTINENTS.get(name.strip().lower())
+    return frozenset(codes) if codes else None

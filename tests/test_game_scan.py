@@ -206,6 +206,86 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(body["wallet"]["scans_left"], 0)
         self.assertEqual(body["wallet"]["flux"], 0)
 
+    def test_targeted_category_scan_charges_flux_not_scans(self):
+        self._set_scans(3)
+        self._set_wallet_flux(100)
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"category": "politics"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["card"]["category"], "politics")
+        self.assertEqual(body["flux_spent"], 100)
+        self.assertEqual(body["wallet"]["flux"], 0)
+        # free scans untouched — targeted scans are a pure flux sink
+        self.assertEqual(body["wallet"]["scans_left"], 3)
+
+    def test_targeted_continent_scan_filters_by_country(self):
+        # Give the pool one card with a real (asian) country code
+        with self.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO game_card_pool (pool_date, source_cluster_id, "
+                " tier, headline, summary, lat, lon, country, category, "
+                " importance, art_seed) "
+                "VALUES (%s, %s, 'common', 'SCANTEST asia JA', 's', 35, 139, "
+                " 'JA', 'politics', 0.5, 42)",
+                (self.pool_date, uuid.uuid4()),
+            )
+            conn.commit()
+        self._set_wallet_flux(100)
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"continent": "asia"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["card"]["country"], "JA")
+        self.assertEqual(r.json()["flux_spent"], 100)
+
+    def test_targeted_scan_empty_target_refuses_without_charge(self):
+        self._set_wallet_flux(100)
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"category": "no-such-category"},
+        )
+        self.assertEqual(r.status_code, 409, r.text)
+        with self.pool.connection() as conn:
+            flux, pulls = conn.execute(
+                "SELECT w.flux, (SELECT count(*) FROM game_pulls p "
+                " WHERE p.player_id = w.player_id) "
+                "FROM game_wallet w WHERE w.player_id = %s",
+                (self.player_id,),
+            ).fetchone()
+        self.assertEqual(flux, 100)
+        self.assertEqual(pulls, 0)
+
+    def test_targeted_scan_insufficient_flux(self):
+        self._set_wallet_flux(10)
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"category": "politics"},
+        )
+        self.assertEqual(r.status_code, 429, r.text)
+        self.assertIn("targeted_scan_cost", r.json()["detail"])
+
+    def test_targeted_scan_rejects_double_filter_and_bad_continent(self):
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"category": "politics", "continent": "asia"},
+        )
+        self.assertEqual(r.status_code, 400, r.text)
+        r = self.client.post(
+            "/game/scan",
+            headers=self.headers,
+            json={"continent": "atlantis"},
+        )
+        self.assertEqual(r.status_code, 400, r.text)
+
     def test_duplicate_and_flux_upgrade_card_income(self):
         earned_at = datetime.now(timezone.utc) - timedelta(days=2)
         with self.pool.connection() as conn:

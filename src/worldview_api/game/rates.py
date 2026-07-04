@@ -20,7 +20,7 @@ _DEFAULTS: dict[str, dict] = {
         "freshness_multiplier": 2,
         "accrual_cap_hours": 24,
     },
-    "scan_prices": {"bonus": 60},
+    "scan_prices": {"bonus": 60, "targeted": 100},
     "card_upgrades": {
         "max_level": 5,
         "income_bonus_per_level": 0.5,

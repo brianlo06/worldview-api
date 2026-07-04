@@ -199,6 +199,10 @@ class ScanOut(BaseModel):
 
 class ScanIn(BaseModel):
     payment: Literal["free", "flux"] = "free"
+    # Targeted scans: restrict the pull to one continent or one category.
+    # Always flux-priced (scan_prices.targeted) — free scans stay untargeted.
+    continent: Optional[str] = None
+    category: Optional[str] = None
 
 
 class IncomeOut(BaseModel):
@@ -298,14 +302,83 @@ def scan(body: ScanIn | None = None, player_id: UUID = Depends(require_player)):
     """Spend one scan → roll a tier (pity-aware) → receive a card from the
     active pool. One transaction: the wallet row lock makes double-submits
     spend exactly once; the pull is durable before the response is sent."""
+    body = body or ScanIn()
+
+    # Targeted scans: derive the pool filter before touching the DB.
+    target_where, target_params = "", ()
+    target_label: Optional[str] = None
+    if body.continent and body.category:
+        raise HTTPException(
+            status_code=400,
+            detail="Target either a continent or a category, not both.",
+        )
+    if body.continent:
+        codes = geo.continent_codes(body.continent)
+        if not codes:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown continent '{body.continent}'."
+            )
+        target_where = " AND country = ANY(%s)"
+        target_params = (sorted(codes),)
+        target_label = body.continent.strip().lower()
+    elif body.category:
+        target_label = body.category.strip().lower()
+        target_where = " AND category = %s"
+        target_params = (target_label,)
+    targeted = target_label is not None
+
     pool = get_pool()
     with pool.connection() as conn:
         cfg = rates_cfg.load_config(conn)
         wallet = wallet_store.lock_and_refresh(conn, player_id, cfg)
-        body = body or ScanIn()
         flux_spent = 0
 
-        if wallet["scans_left"] <= 0:
+        today = wallet_store.today_utc()
+        pd_row = conn.execute(
+            "SELECT max(pool_date) FROM game_card_pool WHERE pool_date <= %s",
+            (today,),
+        ).fetchone()
+        if pd_row is None or pd_row[0] is None:
+            raise HTTPException(status_code=503, detail="No card pool minted yet.")
+        pool_date = pd_row[0]
+
+        populated = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT tier FROM game_card_pool "
+                f"WHERE pool_date = %s{target_where}",
+                (pool_date, *target_params),
+            ).fetchall()
+        }
+
+        if targeted:
+            # Availability first, then price — an impossible target must not
+            # charge. Targeted scans never consume free scans.
+            if not populated:
+                conn.commit()  # keep the daily grant even when refusing
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": f"No {target_label} cards in today's pool.",
+                    },
+                )
+            price = int(cfg["scan_prices"].get("targeted", 100))
+            if wallet["flux"] < price:
+                conn.commit()  # keep the daily grant even when refusing
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "message": f"Not enough Flux for a targeted scan ({price} needed).",
+                        "reset_at": _next_utc_midnight().isoformat(),
+                        "targeted_scan_cost": price,
+                    },
+                )
+            conn.execute(
+                "UPDATE game_wallet SET flux = flux - %s WHERE player_id = %s",
+                (price, player_id),
+            )
+            wallet["flux"] -= price
+            flux_spent = price
+        elif wallet["scans_left"] <= 0:
             if body.payment == "flux":
                 price = int(cfg["scan_prices"].get("bonus", 60))
                 if wallet["flux"] < price:
@@ -335,22 +408,6 @@ def scan(body: ScanIn | None = None, player_id: UUID = Depends(require_player)):
                     },
                 )
 
-        today = wallet_store.today_utc()
-        pd_row = conn.execute(
-            "SELECT max(pool_date) FROM game_card_pool WHERE pool_date <= %s",
-            (today,),
-        ).fetchone()
-        if pd_row is None or pd_row[0] is None:
-            raise HTTPException(status_code=503, detail="No card pool minted yet.")
-        pool_date = pd_row[0]
-
-        populated = {
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT tier FROM game_card_pool WHERE pool_date = %s",
-                (pool_date,),
-            ).fetchall()
-        }
-
         # 32 hex chars of seed material; slices drive the three decisions so
         # the whole pull is re-derivable from the logged seed.
         seed = secrets.token_hex(16)
@@ -368,9 +425,9 @@ def scan(body: ScanIn | None = None, player_id: UUID = Depends(require_player)):
                         tier, pool_date, awarded_tier)
 
         ids = [r[0] for r in conn.execute(
-            "SELECT id FROM game_card_pool WHERE pool_date = %s AND tier = %s "
-            "ORDER BY id",
-            (pool_date, awarded_tier),
+            "SELECT id FROM game_card_pool WHERE pool_date = %s AND tier = %s"
+            f"{target_where} ORDER BY id",
+            (pool_date, awarded_tier, *target_params),
         ).fetchall()]
         card_id = ids[int(logic.seed_to_fraction(seed[24:32]) * len(ids)) % len(ids)]
         card_row = conn.execute(

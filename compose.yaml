@@ -120,6 +120,8 @@ services:
       # World Notepad SPA, served at /notepad/* (see Caddyfile).
       # world-notes/ must sit alongside worldview-api/ on the deploy host.
       - ${NOTEPAD_DIST:-../world-notes/dist}:/srv/notepad:ro
+      # Independent public trading-research dashboard.
+      - ${MARKETS_DIST:-../market-observatory/dist}:/srv/markets:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

@@ -7,6 +7,7 @@
 # Topology (Lightsail Option 1, single instance):
 #   {$DOMAIN}, www.{$DOMAIN}  -> frontend SPA (static dist/, this box)
 #   api.{$DOMAIN}             -> FastAPI service (api:8088, this box)
+#   markets.{$DOMAIN}         -> market observatory (static dist/, this box)
 # Frontend and API share the same instance but stay on separate origins,
 # so the API's CORS_ORIGINS must list the apex + www origins.
 
@@ -44,6 +45,14 @@
         try_files {path} /index.html
         file_server
     }
+}
+
+# --- Market Observatory: isolated static app -------------------------------
+markets.{$DOMAIN} {
+    encode zstd gzip
+    root * /srv/markets
+    try_files {path} /index.html
+    file_server
 }
 
 # --- API: reverse-proxy to the FastAPI service -----------------------------

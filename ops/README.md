@@ -1,5 +1,9 @@
 # Ops — launchd services
 
+> Paths below use `/PATH/TO/worldview-api` as a placeholder. Replace it with the absolute
+> path to your own checkout before copying the plists into `~/Library/LaunchAgents/`.
+
+
 Two LaunchAgents run the backend hands-off:
 
 | Label                   | Job                                                           |
@@ -10,8 +14,8 @@ Two LaunchAgents run the backend hands-off:
 ## Install both
 
 ```bash
-cp /Users/brianlo/worldview-api/ops/com.worldview.api.plist    ~/Library/LaunchAgents/
-cp /Users/brianlo/worldview-api/ops/com.worldview.ingest.plist ~/Library/LaunchAgents/
+cp /PATH/TO/worldview-api/ops/com.worldview.api.plist    ~/Library/LaunchAgents/
+cp /PATH/TO/worldview-api/ops/com.worldview.ingest.plist ~/Library/LaunchAgents/
 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.worldview.api.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.worldview.ingest.plist
@@ -25,8 +29,8 @@ Both fire once on load, then `api` stays running forever and `ingest` re-fires e
 launchctl print gui/$(id -u)/com.worldview.api    | head -30
 launchctl print gui/$(id -u)/com.worldview.ingest | head -30
 
-tail -f /Users/brianlo/worldview-api/logs/api.log
-tail -f /Users/brianlo/worldview-api/logs/ingest.log
+tail -f /PATH/TO/worldview-api/logs/api.log
+tail -f /PATH/TO/worldview-api/logs/ingest.log
 ```
 
 ## Force an immediate run
@@ -48,7 +52,7 @@ rm ~/Library/LaunchAgents/com.worldview.ingest.plist
 ## Manual run (without launchd)
 
 ```bash
-cd /Users/brianlo/worldview-api
+cd /PATH/TO/worldview-api
 .venv/bin/python scripts/serve.py        # API server
 .venv/bin/python scripts/run_all.py      # one-shot ingestion
 ```

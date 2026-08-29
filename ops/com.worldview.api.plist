@@ -7,12 +7,12 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/brianlo/worldview-api/.venv/bin/python</string>
-        <string>/Users/brianlo/worldview-api/scripts/serve.py</string>
+        <string>/PATH/TO/worldview-api/.venv/bin/python</string>
+        <string>/PATH/TO/worldview-api/scripts/serve.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/brianlo/worldview-api</string>
+    <string>/PATH/TO/worldview-api</string>
 
     <!-- Start on load, restart on crash. -->
     <key>RunAtLoad</key>
@@ -25,9 +25,9 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/brianlo/worldview-api/logs/api.log</string>
+    <string>/PATH/TO/worldview-api/logs/api.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/brianlo/worldview-api/logs/api.err</string>
+    <string>/PATH/TO/worldview-api/logs/api.err</string>
 
     <key>EnvironmentVariables</key>
     <dict>

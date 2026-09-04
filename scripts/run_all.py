@@ -4,8 +4,7 @@ Suitable for scheduling via launchd. Order:
     1. GDELT events ingestion
     2. Article-title enrichment (og:title / image)
     3. NOAA NWS weather alerts
-    4. Markets (indices + ETFs)
-    5. Currencies (FX rates)
+    4. Currencies (FX rates)
     6. Embedding pass (local fastembed)
     7. Cluster assignment (greedy kNN via pgvector)
     8. Cluster summarization (NVIDIA DeepSeek)
@@ -28,7 +27,7 @@ from worldview_api.cluster import representative as cluster_representative
 from worldview_api.cluster import summarize as cluster_summarize
 from worldview_api.embed import embed as embed_mod
 from worldview_api.game import mint as game_mint
-from worldview_api.ingest import currencies, enrich, gdelt, gdelt_gkg, markets, weather
+from worldview_api.ingest import currencies, enrich, gdelt, gdelt_gkg, weather
 
 
 def main() -> None:
@@ -43,9 +42,11 @@ def main() -> None:
     steps = [
         ("GDELT events", lambda: gdelt.ingest_once()),
         ("GDELT GKG",    lambda: gdelt_gkg.ingest_gkg_once()),
+        # The translingual feed runs ~5% US against the English feed's ~53%,
+        # and roughly doubles the article volume per cycle.
+        ("GDELT GKG intl", lambda: gdelt_gkg.ingest_gkg_once(translation=True)),
         ("Enrichment",   lambda: asyncio.run(enrich.enrich_batch(limit=300))),
         ("NWS Weather",  lambda: weather.ingest_nws_once()),
-        ("Markets",      lambda: markets.ingest_markets_once()),
         ("Currencies",   lambda: currencies.ingest_currencies_once()),
         ("Embedding",    lambda: embed_mod.embed_batch_once()),
         ("Clustering",   lambda: cluster_assign.cluster_assign_once()),

@@ -22,6 +22,22 @@ from ..db import get_pool
 
 log = logging.getLogger(__name__)
 
+
+def _as_array(v) -> np.ndarray:
+    """Coerce a pgvector column value into a float32 numpy array.
+
+    pgvector-python 0.5.0 changed VectorLoader to return a `Vector` object
+    where earlier releases returned a numpy array. `Vector` defines no
+    `__array__`, so np.asarray() wraps it in a 0-d *object* array and any
+    arithmetic on it delegates to `Vector.__mul__`, which does not exist:
+
+        TypeError: unsupported operand type(s) for *: 'Vector' and 'int'
+
+    Accept either shape so the centroid math survives a pgvector upgrade or
+    downgrade.
+    """
+    return np.asarray(v.to_numpy() if hasattr(v, "to_numpy") else v, dtype=np.float32)
+
 # NWS alerts cluster by storm system, not text similarity. Alert text is
 # templated ("SVRTOP The National Weather Service in ... has issued a ..."),
 # so every same-type warning embeds nearly identically and the kNN path
@@ -161,8 +177,10 @@ def cluster_assign_once(
 
             if candidates and candidates[0][3] is not None and candidates[0][3] >= threshold:
                 cluster_id, c_emb, c_count, _sim = candidates[0]
-                # Incremental centroid update — both arrays come back from pgvector as numpy
-                new_centroid = (np.asarray(c_emb) * c_count + np.asarray(ev_emb)) / (
+                # Incremental centroid update. Both values come straight from a
+                # pgvector column, so they go through _as_array — their Python
+                # type depends on the installed pgvector version.
+                new_centroid = (_as_array(c_emb) * c_count + _as_array(ev_emb)) / (
                     c_count + 1
                 )
 

@@ -27,13 +27,18 @@ COPY scripts ./scripts
 # pyproject lists the core deps. fastembed / openai / numpy / pgvector are
 # imported by the ingest/search code, and pillow by the share-card renderer —
 # install them explicitly so the image is self-contained.
+#
+# Pinned exactly. These were unpinned, so an image rebuild silently moved
+# them: pgvector 0.5.0 changed its psycopg loader to return `Vector` instead
+# of a numpy array and took out the clustering step with no code change.
+# Bump these deliberately, not as a side effect of rebuilding.
 RUN pip install -e . \
-        fastembed \
-        openai \
-        numpy \
-        pgvector \
-        pillow \
-        piper-tts
+        fastembed==0.8.0 \
+        openai==3.8.0 \
+        numpy==2.5.2 \
+        pgvector==0.5.0 \
+        pillow==12.3.0 \
+        piper-tts==1.8.0
 
 # Pre-download the bge-small embedding model so a cold container's first
 # /search isn't a multi-second blocking download. Adds ~80 MB to the image

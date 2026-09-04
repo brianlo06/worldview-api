@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from ..config import settings
 
 GDELT_LASTUPDATE_URL = "https://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+# The translingual feed: the same three files, built from GDELT's machine
+# translation of 65 non-English languages. The English feed runs ~53% US;
+# this one runs ~5%, so it is what makes the globe actually global.
+GDELT_TRANSLATION_LASTUPDATE_URL = (
+    "https://data.gdeltproject.org/gdeltv2/lastupdate-translation.txt"
+)
 
 
 def http_headers() -> dict[str, str]:
@@ -52,3 +59,37 @@ def parse_gdelt_timestamp(s: str | None) -> datetime:
     except ValueError:
         pass
     return datetime.now(tz=timezone.utc)
+
+
+_STAMP_RE = re.compile(r"/(\d{14})\.")
+
+
+def first_available(url: str, max_back: int = 6) -> str | None:
+    """Return `url`, or the newest earlier 15-minute slot that is published.
+
+    The translingual GKG is written up to ~45 minutes behind the timestamp its
+    own lastupdate-translation.txt advertises, so the named file frequently
+    404s. Walk back in 15-minute steps until one exists rather than skipping
+    the cycle. Returns None when nothing in the window is published yet.
+    """
+    m = _STAMP_RE.search(url)
+    if not m:
+        return url
+    try:
+        stamp = datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return url
+    for back in range(max_back + 1):
+        slot = (stamp - timedelta(minutes=15 * back)).strftime("%Y%m%d%H%M%S")
+        candidate = _STAMP_RE.sub(f"/{slot}.", url, count=1)
+        try:
+            resp = httpx.head(
+                candidate, timeout=20, headers=http_headers(), follow_redirects=True
+            )
+        except httpx.HTTPError:
+            continue
+        if resp.status_code == 200:
+            return candidate
+    return None

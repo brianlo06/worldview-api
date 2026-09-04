@@ -27,7 +27,13 @@ from psycopg.types.json import Jsonb
 
 from ..db import get_pool
 from ..titles import is_generic_title
-from .common import GDELT_LASTUPDATE_URL, gdelt_get, url_hash
+from .common import (
+    GDELT_LASTUPDATE_URL,
+    GDELT_TRANSLATION_LASTUPDATE_URL,
+    first_available,
+    gdelt_get,
+    url_hash,
+)
 from .common import parse_gdelt_timestamp as parse_gkg_date
 
 log = logging.getLogger(__name__)
@@ -156,17 +162,24 @@ LOC_CAP, LOC_DIV = 0.15, 40.0
 ENTITY_CAP, ENTITY_DIV = 0.15, 200.0
 
 
-def fetch_latest_gkg_url() -> str:
-    """Return the URL of the latest GKG csv.zip (line 3 of lastupdate.txt)."""
-    resp = gdelt_get(GDELT_LASTUPDATE_URL, timeout=20)
+def fetch_latest_gkg_url(*, translation: bool = False) -> str | None:
+    """Return the URL of the latest GKG csv.zip (line 3 of the index file).
+
+    For the translingual feed the advertised file is often not published yet,
+    so fall back to the newest earlier slot that is. Returns None when the
+    whole search window is still unpublished.
+    """
+    index = GDELT_TRANSLATION_LASTUPDATE_URL if translation else GDELT_LASTUPDATE_URL
+    resp = gdelt_get(index, timeout=20)
     lines = resp.text.strip().splitlines()
     if len(lines) < 3:
-        raise RuntimeError(f"Unexpected lastupdate.txt: {resp.text!r}")
+        raise RuntimeError(f"Unexpected {index}: {resp.text!r}")
     # Line index 2 is GKG (0=events, 1=mentions, 2=gkg)
     parts = lines[2].split()
     if len(parts) < 3:
         raise RuntimeError(f"Bad GKG line: {lines[2]!r}")
-    return parts[2]
+    url = parts[2]
+    return first_available(url) if translation else url
 
 
 def download_gkg_csv(url: str) -> list[dict[str, str]]:
@@ -440,16 +453,24 @@ def humanize_outlet(url: str, fallback: str | None) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def ingest_gkg_once() -> dict[str, Any]:
-    url = fetch_latest_gkg_url()
-    log.info("gkg latest: %s", url)
+def ingest_gkg_once(*, translation: bool = False) -> dict[str, Any]:
+    """Ingest one GKG slot. `translation=True` reads the translingual feed,
+    which is the same format under a separate index, watermark and source
+    label so the two feeds never fight over each other's cursor."""
+    source = "gdelt_gkg_translation" if translation else "gdelt_gkg"
+    url = fetch_latest_gkg_url(translation=translation)
+    if url is None:
+        # Only reachable for the translingual feed, whose files lag their index.
+        log.info("%s: no published slot yet, skipping", source)
+        return {"status": "not_published_yet", "url": None, "rows": 0}
+    log.info("%s latest: %s", source, url)
 
     pool = get_pool()
 
-    # Watermark check — same source string as events, but cursor records "gkg:URL"
+    # Watermark check — each feed keeps its own cursor.
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT cursor FROM source_watermarks WHERE source = 'gdelt_gkg'"
+            "SELECT cursor FROM source_watermarks WHERE source = %s", (source,)
         )
         row = cur.fetchone()
     if row and row[0] == url:
@@ -509,11 +530,11 @@ def ingest_gkg_once() -> dict[str, Any]:
                     cur.execute(
                         """
                         INSERT INTO raw_events (source, source_id, payload)
-                        VALUES ('gdelt_gkg', %s, %s)
+                        VALUES (%s, %s, %s)
                         ON CONFLICT (source, source_id) DO NOTHING
                         RETURNING id
                         """,
-                        (source_id, Jsonb(r)),
+                        (source, source_id, Jsonb(r)),
                     )
                     raw_row = cur.fetchone()
                     if raw_row is None:
@@ -533,7 +554,7 @@ def ingest_gkg_once() -> dict[str, Any]:
                         )
                         VALUES (
                             %s, %s, %s, %s,
-                            'gdelt_gkg', %s, %s,
+                            %s, %s, %s,
                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
                             %s, %s, %s,
                             %s, %s, %s, %s,
@@ -543,7 +564,7 @@ def ingest_gkg_once() -> dict[str, Any]:
                         """,
                         (
                             raw_id, title, src_url, u_hash,
-                            outlet, occurred_at,
+                            source, outlet, occurred_at,
                             lon, lat,
                             country, loc_short, cats,
                             importance, image_url, geo_precision, Jsonb(r),
@@ -563,18 +584,19 @@ def ingest_gkg_once() -> dict[str, Any]:
             cur.execute(
                 """
                 INSERT INTO source_watermarks (source, last_seen_at, cursor)
-                VALUES ('gdelt_gkg', %s, %s)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (source) DO UPDATE
                 SET last_seen_at = EXCLUDED.last_seen_at,
                     cursor       = EXCLUDED.cursor,
                     updated_at   = NOW()
                 """,
-                (datetime.now(timezone.utc), url),
+                (source, datetime.now(timezone.utc), url),
             )
         conn.commit()
 
     return {
         "status": "ok",
+        "source": source,
         "url": url,
         "parsed": len(rows),
         "inserted_raw": inserted_raw,

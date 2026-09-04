@@ -28,13 +28,21 @@ NWS_HEADERS = {
     "Accept": "application/geo+json",
 }
 
+# Severity -> importance. NWS is a US-only firehose: ~225 alerts are active at
+# any moment and ~1700 land in a 48h window, against ~1000 news articles per
+# 15-minute GDELT slot. On the old scale a *Minor* alert scored 0.40 — above
+# the median GKG article (0.55 max ~0.90 only for outliers) and well above the
+# frontend's 0.3 floor — so routine US weather crowded world news off the globe
+# and dominated clustering. Only genuinely severe weather should compete.
 SEVERITY_IMPORTANCE: dict[str, float] = {
-    "Extreme": 0.95,
-    "Severe": 0.80,
-    "Moderate": 0.60,
-    "Minor": 0.40,
-    "Unknown": 0.50,
+    "Extreme": 0.85,
+    "Severe": 0.60,
+    "Moderate": 0.35,
 }
+
+# Dropped at ingest rather than scored low: these are the bulk of the feed
+# (about 60% of active alerts) and none of it is world news.
+SKIPPED_SEVERITIES: frozenset[str] = frozenset({"Minor", "Unknown"})
 
 # Event types that should pulse as "breaking" regardless of severity field
 BREAKING_EVENTS: set[str] = {
@@ -91,8 +99,12 @@ def ingest_nws_once() -> dict[str, int | str]:
             headline = props.get("headline") or f"{event_type} · {area_desc[:80]}"
             description = props.get("description") or ""
 
+            if severity in SKIPPED_SEVERITIES or severity not in SEVERITY_IMPORTANCE:
+                skipped += 1
+                continue
+
             occurred_at = _parse_iso(props.get("sent") or props.get("effective"))
-            importance = SEVERITY_IMPORTANCE.get(severity, 0.5)
+            importance = SEVERITY_IMPORTANCE[severity]
             is_breaking = event_type in BREAKING_EVENTS or severity == "Extreme"
             cats = ["weather"] + (["breaking"] if is_breaking else [])
             if is_breaking:

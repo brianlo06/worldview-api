@@ -23,13 +23,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
 from psycopg.types.json import Jsonb
 
 from ..db import get_pool
 from ..titles import is_generic_title
-from .common import GDELT_LASTUPDATE_URL, url_hash
-from .common import http_headers as _http_headers
+from .common import GDELT_LASTUPDATE_URL, gdelt_get, url_hash
 from .common import parse_gdelt_timestamp as parse_gkg_date
 
 log = logging.getLogger(__name__)
@@ -160,8 +158,7 @@ ENTITY_CAP, ENTITY_DIV = 0.15, 200.0
 
 def fetch_latest_gkg_url() -> str:
     """Return the URL of the latest GKG csv.zip (line 3 of lastupdate.txt)."""
-    resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=20, headers=_http_headers())
-    resp.raise_for_status()
+    resp = gdelt_get(GDELT_LASTUPDATE_URL, timeout=20)
     lines = resp.text.strip().splitlines()
     if len(lines) < 3:
         raise RuntimeError(f"Unexpected lastupdate.txt: {resp.text!r}")
@@ -174,8 +171,7 @@ def fetch_latest_gkg_url() -> str:
 
 def download_gkg_csv(url: str) -> list[dict[str, str]]:
     """Download + unzip + parse a GKG csv.zip into a list of column-dicts."""
-    resp = httpx.get(url, timeout=120, headers=_http_headers())
-    resp.raise_for_status()
+    resp = gdelt_get(url, timeout=120)
     rows: list[dict[str, str]] = []
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         name = zf.namelist()[0]

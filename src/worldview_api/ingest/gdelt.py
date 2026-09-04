@@ -17,13 +17,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
 from psycopg.types.json import Jsonb
 
 from ..db import get_pool
 from .categories import breaking_from_row, cameo_to_category, importance_from_row
-from .common import GDELT_LASTUPDATE_URL, url_hash
-from .common import http_headers as _http_headers
+from .common import GDELT_LASTUPDATE_URL, gdelt_get, url_hash
 from .common import parse_gdelt_timestamp as parse_gdelt_date
 
 log = logging.getLogger(__name__)
@@ -56,8 +54,7 @@ EVENT_COLUMNS: tuple[str, ...] = (
 
 def fetch_latest_url() -> str:
     """Return the URL of the latest GDELT events CSV zip."""
-    resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=20, headers=_http_headers())
-    resp.raise_for_status()
+    resp = gdelt_get(GDELT_LASTUPDATE_URL, timeout=20)
     first_line = resp.text.strip().splitlines()[0]
     parts = first_line.split()
     if len(parts) < 3:
@@ -67,8 +64,7 @@ def fetch_latest_url() -> str:
 
 def download_events_csv(url: str) -> list[dict[str, str]]:
     """Download and parse a GDELT events CSV zip into a list of row dicts."""
-    resp = httpx.get(url, timeout=60, headers=_http_headers())
-    resp.raise_for_status()
+    resp = gdelt_get(url, timeout=60)
     rows: list[dict[str, str]] = []
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         name = zf.namelist()[0]
